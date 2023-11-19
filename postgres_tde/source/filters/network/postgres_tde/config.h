@@ -1,10 +1,10 @@
 #pragma once
 
 #include "source/extensions/filters/network/common/factory_base.h"
-#include "source/extensions/filters/network/well_known_names.h"
 
 #include "postgres_tde/api/filters/network/postgres_tde/postgres_tde.pb.h"
 #include "postgres_tde/api/filters/network/postgres_tde/postgres_tde.pb.validate.h"
+#include "postgres_tde/source/filters/network/postgres_tde/common.h"
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_filter.h"
 
 namespace Envoy {
@@ -19,7 +19,7 @@ class PostgresTDEConfigFactory
     : public Common::FactoryBase<
           envoy::extensions::filters::network::postgres_tde::PostgresTDE> {
 public:
-  PostgresTDEConfigFactory() : FactoryBase{NetworkFilterNames::get().PostgresProxy} {}
+  PostgresTDEConfigFactory() : FactoryBase{POSTGRES_TDE_FILTER_NAME} {}
 
 private:
   Network::FilterFactoryCb createFilterFactoryFromProtoTyped(

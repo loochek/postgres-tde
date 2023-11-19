@@ -119,20 +119,21 @@ public:
   void incTransactions() override;
   void incTransactionsCommit() override;
   void incTransactionsRollback() override;
-  void processQuery(const std::string&) override;
+  void processQuery(Buffer::Instance&, const std::string&) override;
+  void processDataRow(Buffer::Instance&) override;
   bool onSSLRequest() override;
   bool shouldEncryptUpstream() const override;
   void sendUpstream(Buffer::Instance&) override;
   bool encryptUpstream(bool, Buffer::Instance&) override;
 
-  Network::FilterStatus doDecode(Buffer::Instance& data, bool);
+  Decoder::Result doDecode(Buffer::Instance& data, Buffer::Instance& orig_data, bool);
   DecoderPtr createDecoder(DecoderCallbacks* callbacks);
   void setDecoder(std::unique_ptr<Decoder> decoder) { decoder_ = std::move(decoder); }
   Decoder* getDecoder() const { return decoder_.get(); }
 
   // Routines used during integration and unit tests
-  uint32_t getFrontendBufLength() const { return frontend_buffer_.length(); }
-  uint32_t getBackendBufLength() const { return backend_buffer_.length(); }
+  uint32_t getFrontendBufLength() const { return frontend_validation_buffer_.length(); }
+  uint32_t getBackendBufLength() const { return backend_validation_buffer_.length(); }
   const PostgresProxyStats& getStats() const { return config_->stats_; }
   Network::Connection& connection() const { return read_callbacks_->connection(); }
   const PostgresFilterConfigSharedPtr& getConfig() const { return config_; }
@@ -141,8 +142,13 @@ private:
   Network::ReadFilterCallbacks* read_callbacks_{};
   Network::WriteFilterCallbacks* write_callbacks_{};
   PostgresFilterConfigSharedPtr config_;
-  Buffer::OwnedImpl frontend_buffer_;
-  Buffer::OwnedImpl backend_buffer_;
+
+  Buffer::OwnedImpl frontend_validation_buffer_;
+  Buffer::OwnedImpl frontend_mutation_buffer_;
+
+  Buffer::OwnedImpl backend_validation_buffer_;
+  Buffer::OwnedImpl backend_mutation_buffer_;
+
   std::unique_ptr<Decoder> decoder_;
 };
 

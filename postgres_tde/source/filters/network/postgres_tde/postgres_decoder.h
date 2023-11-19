@@ -41,7 +41,8 @@ public:
   enum class ErrorType { Error, Fatal, Panic, Unknown };
   virtual void incErrors(ErrorType) PURE;
 
-  virtual void processQuery(const std::string&) PURE;
+  virtual void processQuery(Buffer::Instance& replace_message, const std::string&) PURE;
+  virtual void processDataRow(Buffer::Instance& replace_message) PURE;
 
   virtual bool onSSLRequest() PURE;
   virtual bool shouldEncryptUpstream() const PURE;
@@ -63,7 +64,7 @@ public:
             // data. This happens when decoder wants filter to perform some action, for example to
             // call starttls transport socket to enable TLS.
   };
-  virtual Result onData(Buffer::Instance& data, bool frontend) PURE;
+  virtual Result onData(Buffer::Instance& parse_data, Buffer::Instance& orig_data, bool frontend, bool first_msg) PURE;
   virtual PostgresSession& getSession() PURE;
 
   const Extensions::Common::SQLUtils::SQLUtils::DecoderAttributes& getAttributes() const {
@@ -82,7 +83,7 @@ class DecoderImpl : public Decoder, Logger::Loggable<Logger::Id::filter> {
 public:
   DecoderImpl(DecoderCallbacks* callbacks) : callbacks_(callbacks) { initialize(); }
 
-  Result onData(Buffer::Instance& data, bool frontend) override;
+  Result onData(Buffer::Instance& parse_data, Buffer::Instance& orig_data, bool frontend, bool first_msg) override;
   PostgresSession& getSession() override { return session_; }
 
   std::string getMessage() { return message_; }
@@ -152,7 +153,7 @@ protected:
 
   void processMessageBody(Buffer::Instance& data, absl::string_view direction, uint32_t length,
                           MessageProcessor& msg, const std::unique_ptr<Message>& parser);
-  void decode(Buffer::Instance& data);
+  void decode();
   void decodeAuthentication();
   void decodeBackendStatements();
   void decodeBackendErrorResponse();
@@ -160,6 +161,7 @@ protected:
   void decodeFrontendTerminate();
   void decodeErrorNotice(MsgParserDict& types);
   void onQuery();
+  void onDataRow();
   void onParse();
   void onStartup();
 
@@ -179,6 +181,7 @@ protected:
   char command_{'-'};
   std::string message_;
   uint32_t message_len_{};
+  Buffer::OwnedImpl replace_message_;
 
   bool encrypted_{false}; // tells if exchange is encrypted
 
@@ -202,6 +205,9 @@ protected:
   // while sending other packets. Currently used only when negotiating
   // upstream SSL.
   Buffer::OwnedImpl temp_storage_;
+
+  Buffer::Instance *orig_data_;
+  uint32_t curr_msg_pos_in_orig_data_;
 
   // MAX_STARTUP_PACKET_LENGTH is defined in Postgres source code
   // as maximum size of initial packet.

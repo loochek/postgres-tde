@@ -330,8 +330,8 @@ public:
   std::string toString() const { return ""; }
   bool read(const Buffer::Instance&, uint64_t&, uint64_t&) { return true; }
   Message::ValidationResult validate(const Buffer::Instance&, const uint64_t, uint64_t&,
-                                     uint64_t& left) {
-    return left == 0 ? Message::ValidationOK : Message::ValidationFailed;
+                                     uint64_t&) {
+    return Message::ValidationOK;
   }
 };
 

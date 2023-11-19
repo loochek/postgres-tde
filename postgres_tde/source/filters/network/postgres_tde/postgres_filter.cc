@@ -4,9 +4,11 @@
 #include "envoy/network/connection.h"
 
 #include "source/common/common/assert.h"
-#include "source/extensions/filters/network/well_known_names.h"
 
+#include "postgres_tde/source/filters/network/postgres_tde/common.h"
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_decoder.h"
+
+#include <cstring>
 
 namespace Envoy {
 namespace Extensions {
@@ -30,14 +32,26 @@ Network::FilterStatus PostgresFilter::onData(Buffer::Instance& data, bool) {
   ENVOY_CONN_LOG(trace, "postgres_proxy: got {} bytes", read_callbacks_->connection(),
                  data.length());
 
-  // Frontend Buffer
-  frontend_buffer_.add(data);
-  Network::FilterStatus result = doDecode(frontend_buffer_, true);
-  if (result == Network::FilterStatus::StopIteration) {
-    ASSERT(frontend_buffer_.length() == 0);
-    data.drain(data.length());
+  frontend_validation_buffer_.add(data);
+  frontend_mutation_buffer_.add(data);
+  data.drain(data.length());
+
+  Decoder::Result result = doDecode(frontend_validation_buffer_, frontend_mutation_buffer_, true);
+  uint32_t mutated_data_size = frontend_mutation_buffer_.length() - frontend_validation_buffer_.length();
+
+  switch (result) {
+  case Decoder::Result::NeedMoreData:
+  case Decoder::Result::ReadyForNext:
+    // Pass mutated data to the rest of the filter chain and continue
+    data.move(frontend_mutation_buffer_, mutated_data_size);
+    read_callbacks_->continueReading();
+    return Network::FilterStatus::StopIteration;
+
+  case Decoder::Result::Stopped:
+    ASSERT(frontend_validation_buffer_.length() == 0);
+    frontend_mutation_buffer_.drain(frontend_mutation_buffer_.length());
+    return Network::FilterStatus::StopIteration;
   }
-  return result;
 }
 
 Network::FilterStatus PostgresFilter::onNewConnection() { return Network::FilterStatus::Continue; }
@@ -51,16 +65,27 @@ void PostgresFilter::initializeWriteFilterCallbacks(Network::WriteFilterCallback
 }
 
 // Network::WriteFilter
-Network::FilterStatus PostgresFilter::onWrite(Buffer::Instance& data, bool) {
+Network::FilterStatus PostgresFilter::onWrite(Buffer::Instance& data, bool end_stream) {
+  backend_validation_buffer_.add(data);
+  backend_mutation_buffer_.add(data);
+  data.drain(data.length());
 
-  // Backend Buffer
-  backend_buffer_.add(data);
-  Network::FilterStatus result = doDecode(backend_buffer_, false);
-  if (result == Network::FilterStatus::StopIteration) {
-    ASSERT(backend_buffer_.length() == 0);
-    data.drain(data.length());
+  Decoder::Result result = doDecode(backend_validation_buffer_, backend_mutation_buffer_, false);
+  uint32_t mutated_data_size = backend_mutation_buffer_.length() - backend_validation_buffer_.length();
+
+  switch (result) {
+  case Decoder::Result::NeedMoreData:
+  case Decoder::Result::ReadyForNext:
+    // Pass mutated data to the rest of the filter chain and continue
+    data.move(backend_mutation_buffer_, mutated_data_size);
+    write_callbacks_->injectWriteDataToFilterChain(data, end_stream);
+    return Network::FilterStatus::StopIteration;
+
+  case Decoder::Result::Stopped:
+    ASSERT(frontend_validation_buffer_.length() == 0);
+    backend_mutation_buffer_.drain(backend_mutation_buffer_.length());
+    return Network::FilterStatus::StopIteration;
   }
-  return result;
 }
 
 DecoderPtr PostgresFilter::createDecoder(DecoderCallbacks* callbacks) {
@@ -176,7 +201,21 @@ void PostgresFilter::incStatements(StatementType type) {
   }
 }
 
-void PostgresFilter::processQuery(const std::string& sql) {
+void PostgresFilter::processQuery(Buffer::Instance& replace_message, const std::string& sql) {
+  ENVOY_CONN_LOG(error, "postgres_proxy: {}", read_callbacks_->connection(), sql.c_str());
+
+  const char* src = u8"Москва";
+  const char* tgt = u8"Учалы";
+  ssize_t pos = replace_message.search(src, std::strlen(src), 0);
+  if (pos != -1) {
+    Buffer::OwnedImpl new_orig_data;
+    new_orig_data.move(replace_message, pos);
+    new_orig_data.add(tgt, std::strlen(tgt));
+    replace_message.drain(std::strlen(src));
+    new_orig_data.move(replace_message);
+    replace_message.move(new_orig_data);
+  }
+
   if (config_->enable_sql_parsing_) {
     ProtobufWkt::Struct metadata;
 
@@ -194,8 +233,21 @@ void PostgresFilter::processQuery(const std::string& sql) {
                    sql.c_str());
 
     // Set dynamic metadata
-    read_callbacks_->connection().streamInfo().setDynamicMetadata(
-        NetworkFilterNames::get().PostgresProxy, metadata);
+    read_callbacks_->connection().streamInfo().setDynamicMetadata(POSTGRES_TDE_FILTER_NAME, metadata);
+  }
+}
+
+void PostgresFilter::processDataRow(Buffer::Instance& replace_message) {
+  const char* src = u8"Нижний Новгород";
+  const char* tgt = u8"Новгород Нижний";
+  ssize_t pos = replace_message.search(src, std::strlen(src), 0);
+  if (pos != -1) {
+    Buffer::OwnedImpl new_orig_data;
+    new_orig_data.move(replace_message, pos);
+    new_orig_data.add(tgt, std::strlen(tgt));
+    replace_message.drain(std::strlen(src));
+    new_orig_data.move(replace_message);
+    replace_message.move(new_orig_data);
   }
 }
 
@@ -281,20 +333,24 @@ bool PostgresFilter::encryptUpstream(bool upstream_agreed, Buffer::Instance& dat
   return encrypted;
 }
 
-Network::FilterStatus PostgresFilter::doDecode(Buffer::Instance& data, bool frontend) {
+Decoder::Result PostgresFilter::doDecode(Buffer::Instance& parse_data, Buffer::Instance& orig_data, bool frontend) {
   // Keep processing data until buffer is empty or decoder says
   // that it cannot process data in the buffer.
-  while (0 < data.length()) {
-    switch (decoder_->onData(data, frontend)) {
-    case Decoder::Result::NeedMoreData:
-      return Network::FilterStatus::Continue;
+  bool first_invocation = true;
+  while (0 < parse_data.length()) {
+    bool is_first_invocation = first_invocation;
+    first_invocation = false;
+
+    switch (decoder_->onData(parse_data, orig_data, frontend, is_first_invocation)) {
     case Decoder::Result::ReadyForNext:
       continue;
+    case Decoder::Result::NeedMoreData:
+      return Decoder::Result::NeedMoreData;
     case Decoder::Result::Stopped:
-      return Network::FilterStatus::StopIteration;
+      return Decoder::Result::Stopped;
     }
   }
-  return Network::FilterStatus::Continue;
+  return Decoder::Result::ReadyForNext;
 }
 
 } // namespace PostgresTDE

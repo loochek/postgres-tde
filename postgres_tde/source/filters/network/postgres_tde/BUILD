@@ -22,6 +22,7 @@ envoy_cc_library(
         "postgres_filter.h",
         "postgres_message.h",
         "postgres_session.h",
+        "common.h",
     ],
     repository = "@envoy",
     deps = [
@@ -33,19 +34,17 @@ envoy_cc_library(
         "@envoy//envoy/stats:stats_macros",
         "@envoy//source/common/buffer:buffer_lib",
         "@envoy//source/common/network:filter_lib",
-        "@envoy//source/extensions/filters/network:well_known_names",
     ],
 )
 
 envoy_cc_library(
     name = "postgres_tde_config",
     srcs = ["config.cc"],
-    hdrs = ["config.h"],
+    hdrs = ["config.h", "common.h"],
     repository = "@envoy",
     deps = [
         ":postgres_tde_lib",
         "@envoy//source/extensions/filters/network/common:factory_base_lib",
-        "@envoy//source/extensions/filters/network:well_known_names",
         "//postgres_tde/api/filters/network/postgres_tde:pkg_cc_proto",
     ],
 )

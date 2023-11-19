@@ -52,7 +52,7 @@ void DecoderImpl::initialize() {
 
   // Handler for unknown Frontend messages.
   FE_messages_.unknown_ =
-      MessageProcessor{"Other", BODY_FORMAT(ByteN), {&DecoderImpl::incMessagesUnknown}};
+      MessageProcessor{"Other", BODY_FORMAT(ByteN), {[](DecoderImpl* decoder) -> void {decoder->incMessagesUnknown();}}};
 
   // Backend messages.
   BE_messages_.direction_ = BACKEND;
@@ -73,7 +73,7 @@ void DecoderImpl::initialize() {
   BE_known_msgs['G'] = MessageProcessor{"CopyInResponse", BODY_FORMAT(Int8, Array<Int16>), {}};
   BE_known_msgs['H'] = MessageProcessor{"CopyOutResponse", BODY_FORMAT(Int8, Array<Int16>), {}};
   BE_known_msgs['W'] = MessageProcessor{"CopyBothResponse", BODY_FORMAT(Int8, Array<Int16>), {}};
-  BE_known_msgs['D'] = MessageProcessor{"DataRow", BODY_FORMAT(Array<VarByteN>), {}};
+  BE_known_msgs['D'] = MessageProcessor{"DataRow", BODY_FORMAT(Array<VarByteN>), {&DecoderImpl::onDataRow}};
   BE_known_msgs['I'] = MessageProcessor{"EmptyQueryResponse", NO_BODY, {}};
   BE_known_msgs['E'] = MessageProcessor{
       "ErrorResponse", BODY_FORMAT(Byte1, String), {&DecoderImpl::decodeBackendErrorResponse}};
@@ -96,7 +96,7 @@ void DecoderImpl::initialize() {
 
   // Handler for unknown Backend messages.
   BE_messages_.unknown_ =
-      MessageProcessor{"Other", BODY_FORMAT(ByteN), {&DecoderImpl::incMessagesUnknown}};
+      MessageProcessor{"Other", BODY_FORMAT(ByteN), {[](DecoderImpl* decoder) -> void {decoder->incMessagesUnknown();}}};
 
   // Setup hash map for handling backend statements.
   BE_statements_["BEGIN"] = [this](DecoderImpl*) -> void {
@@ -182,17 +182,22 @@ void DecoderImpl::initialize() {
 /* Main handler for incoming messages. Messages are dispatched based on the
    current decoder's state.
 */
-Decoder::Result DecoderImpl::onData(Buffer::Instance& data, bool frontend) {
+Decoder::Result DecoderImpl::onData(Buffer::Instance& parse_data, Buffer::Instance& orig_data, bool frontend, bool first_msg) {
+  if (first_msg) {
+    orig_data_ = &orig_data;
+    curr_msg_pos_in_orig_data_ = 0;
+  }
+
   switch (state_) {
   case State::InitState:
-    return onDataInit(data, frontend);
+    return onDataInit(parse_data, frontend);
   case State::OutOfSyncState:
   case State::EncryptedState:
-    return onDataIgnore(data, frontend);
+    return onDataIgnore(parse_data, frontend);
   case State::InSyncState:
-    return onDataInSync(data, frontend);
+    return onDataInSync(parse_data, frontend);
   case State::NegotiatingUpstreamSSL:
-    return onDataInNegotiating(data, frontend);
+    return onDataInNegotiating(parse_data, frontend);
   default:
     PANIC("not implemented");
   }
@@ -289,7 +294,9 @@ Decoder::Result DecoderImpl::onDataInit(Buffer::Instance& data, bool) {
   data.drain(4);
 
   processMessageBody(data, FRONTEND, message_len_ - 4, first_, msgParser);
-  data.drain(message_len_);
+//  data.drain(message_len_); // TODO: ???
+
+  curr_msg_pos_in_orig_data_ += message_len_;
   return result;
 }
 
@@ -361,6 +368,7 @@ Decoder::Result DecoderImpl::onDataInSync(Buffer::Instance& data, bool frontend)
   // Validate the message before processing.
   const MsgBodyReader& f = std::get<1>(msg.get());
   message_len_ = data.peekBEInt<uint32_t>(1);
+
   const auto msgParser = f();
   // Run the validation.
   // Because the message validation may return NeedMoreData error, data must stay intact (no
@@ -378,6 +386,7 @@ Decoder::Result DecoderImpl::onDataInSync(Buffer::Instance& data, bool frontend)
   if (validationResult == Message::ValidationFailed) {
     // Message does not conform to the expected format. Move to out-of-sync state.
     data.drain(data.length());
+    ENVOY_LOG(error, "postgres_proxy: out of sync");
     state_ = State::OutOfSyncState;
     return Decoder::Result::ReadyForNext;
   }
@@ -386,10 +395,26 @@ Decoder::Result DecoderImpl::onDataInSync(Buffer::Instance& data, bool frontend)
   // Processing the message assumes that message starts at the beginning of the buffer.
   data.drain(5);
 
-  processMessageBody(data, msg_processor.direction_, message_len_ - 4, msg, msgParser);
+  // Store message content (without length) to the mutable buffer
+  // and remember start position for the future replacement
+  uint32_t message_len_without_size = message_len_ - 4;
+  replace_message_ = Buffer::OwnedImpl(data.linearize(message_len_without_size), message_len_without_size);
 
+  processMessageBody(data, msg_processor.direction_, message_len_without_size, msg, msgParser);
+
+  // Integrate replace data to the original data (length is rewritten)
+  Buffer::OwnedImpl new_message_data;
+  new_message_data.move(*orig_data_, curr_msg_pos_in_orig_data_ + 1);
+  new_message_data.writeBEInt<uint32_t>(replace_message_.length() + sizeof(uint32_t));
+  new_message_data.add(replace_message_);
+  orig_data_->drain(message_len_);
+  new_message_data.move(*orig_data_);
+  orig_data_->move(new_message_data);
+
+  curr_msg_pos_in_orig_data_ += replace_message_.length() + 5;
   return Decoder::Result::ReadyForNext;
 }
+
 /*
   onDataIgnore method is called when the decoder does not inspect passing
   messages. This happens when the decoder detected encrypted packets or
@@ -471,7 +496,7 @@ Decoder::Result DecoderImpl::onDataInNegotiating(Buffer::Instance& data, bool fr
 // Method is called when X (Terminate) message
 // is encountered by the decoder.
 void DecoderImpl::decodeFrontendTerminate() {
-  if (session_.inTransaction()) {
+    if (session_.inTransaction()) {
     session_.setInTransaction(false);
     callbacks_->incTransactionsRollback();
   }
@@ -481,7 +506,7 @@ void DecoderImpl::decodeFrontendTerminate() {
 // It looks for 4 bytes of zeros, which means that login to
 // database was successful.
 void DecoderImpl::decodeAuthentication() {
-  // Check if auth message indicates successful authentication.
+    // Check if auth message indicates successful authentication.
   // Length must be 8 and payload must be 0.
   if ((8 == message_len_) && (0 == message_.data()[0]) && (0 == message_.data()[1]) &&
       (0 == message_.data()[2]) && (0 == message_.data()[3])) {
@@ -539,16 +564,22 @@ void DecoderImpl::onParse() {
   // The first string is optional. If no \0 is found it means
   // that the message contains query string only.
   std::vector<std::string> query_parts = absl::StrSplit(message_, absl::ByChar('\0'));
-  callbacks_->processQuery(query_parts[1]);
+  callbacks_->processQuery(replace_message_, query_parts[1]);
 }
 
-void DecoderImpl::onQuery() { callbacks_->processQuery(message_); }
+void DecoderImpl::onQuery() {
+    callbacks_->processQuery(replace_message_, message_);
+}
+
+void DecoderImpl::onDataRow() {
+    callbacks_->processDataRow(replace_message_);
+}
 
 // Method is invoked on clear-text Startup message.
 // The message format is continuous string of the following format:
 // user<username>database<database-name>application_name<application>encoding<encoding-type>
 void DecoderImpl::onStartup() {
-  // First 4 bytes of startup message contains version code.
+    // First 4 bytes of startup message contains version code.
   // It is skipped. After that message contains attributes.
   attributes_ = absl::StrSplit(message_.substr(4), absl::ByChar('\0'), absl::SkipEmpty());
 
