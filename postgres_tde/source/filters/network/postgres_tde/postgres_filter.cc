@@ -25,6 +25,9 @@ PostgresFilter::PostgresFilter(PostgresFilterConfigSharedPtr config) : config_{c
   if (!decoder_) {
     decoder_ = createDecoder(this);
   }
+  if (!mutation_manager_) {
+    mutation_manager_ = createMutationManager();
+  }
 }
 
 // Network::ReadFilter
@@ -42,9 +45,11 @@ Network::FilterStatus PostgresFilter::onData(Buffer::Instance& data, bool) {
   switch (result) {
   case Decoder::Result::NeedMoreData:
   case Decoder::Result::ReadyForNext:
-    // Pass mutated data to the rest of the filter chain and continue
-    data.move(frontend_mutation_buffer_, mutated_data_size);
-    read_callbacks_->continueReading();
+    if (mutated_data_size > 0) {
+      // Pass mutated data to the rest of the filter chain and continue
+      data.move(frontend_mutation_buffer_, mutated_data_size);
+      read_callbacks_->continueReading();
+    }
     return Network::FilterStatus::StopIteration;
 
   case Decoder::Result::Stopped:
@@ -76,9 +81,11 @@ Network::FilterStatus PostgresFilter::onWrite(Buffer::Instance& data, bool end_s
   switch (result) {
   case Decoder::Result::NeedMoreData:
   case Decoder::Result::ReadyForNext:
-    // Pass mutated data to the rest of the filter chain and continue
-    data.move(backend_mutation_buffer_, mutated_data_size);
-    write_callbacks_->injectWriteDataToFilterChain(data, end_stream);
+    if (mutated_data_size > 0) {
+      // Pass mutated data to the rest of the filter chain and continue
+      data.move(backend_mutation_buffer_, mutated_data_size);
+      write_callbacks_->injectWriteDataToFilterChain(data, end_stream);
+    }
     return Network::FilterStatus::StopIteration;
 
   case Decoder::Result::Stopped:
@@ -90,6 +97,10 @@ Network::FilterStatus PostgresFilter::onWrite(Buffer::Instance& data, bool end_s
 
 DecoderPtr PostgresFilter::createDecoder(DecoderCallbacks* callbacks) {
   return std::make_unique<DecoderImpl>(callbacks);
+}
+
+MutationManagerPtr PostgresFilter::createMutationManager() {
+  return std::make_unique<MutationManagerImpl>();
 }
 
 void PostgresFilter::incMessagesBackend() {
@@ -201,54 +212,43 @@ void PostgresFilter::incStatements(StatementType type) {
   }
 }
 
-void PostgresFilter::processQuery(Buffer::Instance& replace_message, const std::string& sql) {
-  ENVOY_CONN_LOG(error, "postgres_proxy: {}", read_callbacks_->connection(), sql.c_str());
+bool PostgresFilter::processQuery(Buffer::Instance& replace_message) {
+  std::string query = replace_message.toString();
+  query.pop_back();  // remove null terminator specified by the postgres string type
 
-  const char* src = u8"Москва";
-  const char* tgt = u8"Учалы";
-  ssize_t pos = replace_message.search(src, std::strlen(src), 0);
-  if (pos != -1) {
-    Buffer::OwnedImpl new_orig_data;
-    new_orig_data.move(replace_message, pos);
-    new_orig_data.add(tgt, std::strlen(tgt));
-    replace_message.drain(std::strlen(src));
-    new_orig_data.move(replace_message);
-    replace_message.move(new_orig_data);
-  }
-
-  if (config_->enable_sql_parsing_) {
-    ProtobufWkt::Struct metadata;
-
-    auto result = Common::SQLUtils::SQLUtils::setMetadata(sql, decoder_->getAttributes(), metadata);
-
-    if (!result) {
-      config_->stats_.statements_parse_error_.inc();
-      ENVOY_CONN_LOG(trace, "postgres_proxy: cannot parse SQL: {}", read_callbacks_->connection(),
-                     sql.c_str());
-      return;
-    }
-
-    config_->stats_.statements_parsed_.inc();
-    ENVOY_CONN_LOG(trace, "postgres_proxy: query processed {}", read_callbacks_->connection(),
-                   sql.c_str());
-
-    // Set dynamic metadata
-    read_callbacks_->connection().streamInfo().setDynamicMetadata(POSTGRES_TDE_FILTER_NAME, metadata);
+  QueryProcessingResult result = mutation_manager_->processQuery(query);
+  if (result.isOk) {
+    replace_message.drain(replace_message.length());
+    replace_message.add(query.data(), query.length() + 1);  // taking null terminator into account
+    return true;
+  } else {
+    Buffer::OwnedImpl injectBuffer;
+    ErrorResponseMessageType error_response = createErrorResponseMessage(result.error);
+    error_response.write(injectBuffer, 'E');
+    READY_FOR_QUERY_MESSAGE.write(injectBuffer, 'Z');
+    write_callbacks_->injectWriteDataToFilterChain(injectBuffer, false);
+    return false;
   }
 }
 
+void PostgresFilter::processRowDescription(Buffer::Instance& replace_message) {
+  mutation_manager_->processRowDescription(replace_message);
+}
+
 void PostgresFilter::processDataRow(Buffer::Instance& replace_message) {
-  const char* src = u8"Нижний Новгород";
-  const char* tgt = u8"Новгород Нижний";
-  ssize_t pos = replace_message.search(src, std::strlen(src), 0);
-  if (pos != -1) {
-    Buffer::OwnedImpl new_orig_data;
-    new_orig_data.move(replace_message, pos);
-    new_orig_data.add(tgt, std::strlen(tgt));
-    replace_message.drain(std::strlen(src));
-    new_orig_data.move(replace_message);
-    replace_message.move(new_orig_data);
-  }
+  mutation_manager_->processDataRow(replace_message);
+}
+
+void PostgresFilter::processCommandComplete(Buffer::Instance& replace_message) {
+  mutation_manager_->processCommandComplete(replace_message);
+}
+
+void PostgresFilter::processEmptyQueryResponse() {
+  mutation_manager_->processEmptyQueryResponse();
+}
+
+void PostgresFilter::processErrorResponse(Buffer::Instance& replace_message) {
+  mutation_manager_->processErrorResponse(replace_message);
 }
 
 bool PostgresFilter::onSSLRequest() {

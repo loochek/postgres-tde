@@ -67,16 +67,26 @@ void DecoderImpl::initialize() {
   BE_known_msgs['2'] = MessageProcessor{"BindComplete", NO_BODY, {}};
   BE_known_msgs['3'] = MessageProcessor{"CloseComplete", NO_BODY, {}};
   BE_known_msgs['C'] = MessageProcessor{
-      "CommandComplete", BODY_FORMAT(String), {&DecoderImpl::decodeBackendStatements}};
+      "CommandComplete",
+      BODY_FORMAT(String),
+      {&DecoderImpl::decodeBackendStatements, &DecoderImpl::onCommandComplete}
+  };
   BE_known_msgs['d'] = MessageProcessor{"CopyData", BODY_FORMAT(ByteN), {}};
   BE_known_msgs['c'] = MessageProcessor{"CopyDone", NO_BODY, {}};
   BE_known_msgs['G'] = MessageProcessor{"CopyInResponse", BODY_FORMAT(Int8, Array<Int16>), {}};
   BE_known_msgs['H'] = MessageProcessor{"CopyOutResponse", BODY_FORMAT(Int8, Array<Int16>), {}};
   BE_known_msgs['W'] = MessageProcessor{"CopyBothResponse", BODY_FORMAT(Int8, Array<Int16>), {}};
-  BE_known_msgs['D'] = MessageProcessor{"DataRow", BODY_FORMAT(Array<VarByteN>), {&DecoderImpl::onDataRow}};
-  BE_known_msgs['I'] = MessageProcessor{"EmptyQueryResponse", NO_BODY, {}};
+  BE_known_msgs['D'] = MessageProcessor{
+      "DataRow",
+      BODY_FORMAT(Array<VarByteN>),
+      {&DecoderImpl::onDataRow},
+  };
+  BE_known_msgs['I'] = MessageProcessor{"EmptyQueryResponse", NO_BODY, {&DecoderImpl::onEmptyQueryResponse}};
   BE_known_msgs['E'] = MessageProcessor{
-      "ErrorResponse", BODY_FORMAT(Byte1, String), {&DecoderImpl::decodeBackendErrorResponse}};
+      "ErrorResponse",
+      BODY_FORMAT(Byte1, String),
+      {&DecoderImpl::decodeBackendErrorResponse, &DecoderImpl::onErrorResponse},
+  };
   BE_known_msgs['V'] = MessageProcessor{"FunctionCallResponse", BODY_FORMAT(VarByteN), {}};
   BE_known_msgs['v'] = MessageProcessor{"NegotiateProtocolVersion", BODY_FORMAT(ByteN), {}};
   BE_known_msgs['n'] = MessageProcessor{"NoData", NO_BODY, {}};
@@ -92,7 +102,8 @@ void DecoderImpl::initialize() {
   BE_known_msgs['T'] = MessageProcessor{
       "RowDescription",
       BODY_FORMAT(Array<Sequence<String, Int32, Int16, Int32, Int16, Int32, Int16>>),
-      {}};
+      {&DecoderImpl::onRowDescription}
+  };
 
   // Handler for unknown Backend messages.
   BE_messages_.unknown_ =
@@ -400,18 +411,28 @@ Decoder::Result DecoderImpl::onDataInSync(Buffer::Instance& data, bool frontend)
   uint32_t message_len_without_size = message_len_ - 4;
   replace_message_ = Buffer::OwnedImpl(data.linearize(message_len_without_size), message_len_without_size);
 
+  omit_ = false;
   processMessageBody(data, msg_processor.direction_, message_len_without_size, msg, msgParser);
+  if (!omit_) {
+    // Integrate replace data to the original data (length is rewritten)
+    Buffer::OwnedImpl new_message_data;
+    new_message_data.move(*orig_data_, curr_msg_pos_in_orig_data_ + 1);
+    new_message_data.writeBEInt<uint32_t>(replace_message_.length() + sizeof(uint32_t));
+    new_message_data.add(replace_message_);
+    orig_data_->drain(message_len_);
+    new_message_data.move(*orig_data_);
+    orig_data_->move(new_message_data);
 
-  // Integrate replace data to the original data (length is rewritten)
-  Buffer::OwnedImpl new_message_data;
-  new_message_data.move(*orig_data_, curr_msg_pos_in_orig_data_ + 1);
-  new_message_data.writeBEInt<uint32_t>(replace_message_.length() + sizeof(uint32_t));
-  new_message_data.add(replace_message_);
-  orig_data_->drain(message_len_);
-  new_message_data.move(*orig_data_);
-  orig_data_->move(new_message_data);
+    curr_msg_pos_in_orig_data_ += replace_message_.length() + 5;
+  } else {
+    // Omit message (including identifier)
+    Buffer::OwnedImpl new_message_data;
+    new_message_data.move(*orig_data_, curr_msg_pos_in_orig_data_);
+    orig_data_->drain(message_len_ + 1);
+    new_message_data.move(*orig_data_);
+    orig_data_->move(new_message_data);
+  }
 
-  curr_msg_pos_in_orig_data_ += replace_message_.length() + 5;
   return Decoder::Result::ReadyForNext;
 }
 
@@ -563,16 +584,32 @@ void DecoderImpl::onParse() {
   // The first two strings are separated by \0.
   // The first string is optional. If no \0 is found it means
   // that the message contains query string only.
-  std::vector<std::string> query_parts = absl::StrSplit(message_, absl::ByChar('\0'));
-  callbacks_->processQuery(replace_message_, query_parts[1]);
+//  std::vector<std::string> query_parts = absl::StrSplit(message_, absl::ByChar('\0'));
+//  callbacks_->processQuery(replace_message_);
 }
 
 void DecoderImpl::onQuery() {
-    callbacks_->processQuery(replace_message_, message_);
+  omit_ = !callbacks_->processQuery(replace_message_);
+}
+
+void DecoderImpl::onRowDescription() {
+  callbacks_->processRowDescription(replace_message_);
 }
 
 void DecoderImpl::onDataRow() {
-    callbacks_->processDataRow(replace_message_);
+  callbacks_->processDataRow(replace_message_);
+}
+
+void DecoderImpl::onCommandComplete() {
+  callbacks_->processCommandComplete(replace_message_);
+}
+
+void DecoderImpl::onEmptyQueryResponse() {
+  callbacks_->processEmptyQueryResponse();
+}
+
+void DecoderImpl::onErrorResponse() {
+  callbacks_->processErrorResponse(replace_message_);
 }
 
 // Method is invoked on clear-text Startup message.

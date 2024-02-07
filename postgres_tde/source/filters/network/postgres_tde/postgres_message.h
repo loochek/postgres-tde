@@ -49,6 +49,8 @@ public:
   // the Postgres message.
   virtual std::string toString() const PURE;
 
+  virtual void write(Buffer::Instance&, char) const PURE;
+
 protected:
   ValidationResult validation_result_{ValidationNeedMoreData};
 };
@@ -57,6 +59,9 @@ protected:
 // Size of integer types is fixed and depends on the type of integer.
 template <typename T> class Int {
 public:
+  Int() = default;
+  Int(T value): value_(value) {};
+
   /**
    * Read integer value from data buffer.
    * @param data reference to a buffer containing data to read.
@@ -93,6 +98,14 @@ public:
 
   std::string toString() const { return fmt::format("[{}]", value_); }
 
+  int32_t getSize() const {
+    return sizeof(T);
+  }
+
+  void write(Buffer::Instance& to) const {
+      to.writeBEInt(value_);
+  };
+
   T get() const { return value_; }
 
 private:
@@ -109,6 +122,9 @@ using Byte1 = Int<char>;
 // String type requires byte with zero value to indicate end of string.
 class String {
 public:
+  String() = default;
+  explicit String(std::string str) : value_(std::move(str)) {};
+
   /**
    * See above for parameter and return value description.
    */
@@ -116,6 +132,14 @@ public:
   std::string toString() const;
   Message::ValidationResult validate(const Buffer::Instance&, const uint64_t start_offset,
                                      uint64_t&, uint64_t&);
+
+  int32_t getSize() const {
+      return value_.size() + 1;
+  }
+
+  void write(Buffer::Instance& to) const {
+      to.add(value_.data(), value_.size() + 1);
+  };
 
 private:
   // start_ and end_ are set by validate method.
@@ -134,6 +158,14 @@ public:
   bool read(const Buffer::Instance& data, uint64_t& pos, uint64_t& left);
   std::string toString() const;
   Message::ValidationResult validate(const Buffer::Instance&, const uint64_t, uint64_t&, uint64_t&);
+
+  int32_t getSize() const {
+      return value_.size();
+  }
+
+  void write(Buffer::Instance& to) const {
+      to.add(value_.data(), value_.size());
+  };
 
 private:
   std::vector<uint8_t> value_;
@@ -158,6 +190,15 @@ public:
   bool read(const Buffer::Instance& data, uint64_t& pos, uint64_t& left);
   std::string toString() const;
   Message::ValidationResult validate(const Buffer::Instance&, const uint64_t, uint64_t&, uint64_t&);
+
+  int32_t getSize() const {
+      return value_.size() + 4;
+  }
+
+  void write(Buffer::Instance& to) const {
+      to.writeBEInt(len_);
+      to.add(value_.data(), value_.size());
+  };
 
 private:
   int32_t len_;
@@ -226,6 +267,21 @@ public:
     return Message::ValidationOK;
   }
 
+  int32_t getSize() const {
+    uint16_t size = 0;
+    for (auto& elem : value_) {
+      size += elem->getSize();
+    }
+    return 4 + size;
+  }
+
+  void write(Buffer::Instance& to) const {
+    to.writeBEInt(size_);
+    for (const std::unique_ptr<T>& elem : value_) {
+      elem->write(to);
+    }
+  };
+
 private:
   uint16_t size_;
   std::vector<std::unique_ptr<T>> value_;
@@ -236,6 +292,9 @@ private:
 // of the Postgres message.
 template <typename T> class Repeated {
 public:
+  Repeated() = default;
+  explicit Repeated(std::vector<std::unique_ptr<T>> elements) : value_(std::move(elements)) {}
+
   /**
    * See above for parameter and return value description.
    */
@@ -283,6 +342,20 @@ public:
     return Message::ValidationOK;
   }
 
+  int32_t getSize() const {
+    uint16_t size = 0;
+    for (auto& elem : value_) {
+      size += elem->getSize();
+    }
+    return size;
+  }
+
+  void write(Buffer::Instance& to) const {
+    for (const std::unique_ptr<T>& elem : value_) {
+      elem->write(to);
+    }
+  };
+
 private:
   std::vector<std::unique_ptr<T>> value_;
 };
@@ -297,6 +370,8 @@ template <typename FirstField, typename... Remaining> class Sequence<FirstField,
 
 public:
   Sequence() = default;
+  explicit Sequence(FirstField first, Remaining... remaining): first_(std::move(first)), remaining_(std::move(remaining)...) {}
+
   std::string toString() const { return absl::StrCat(first_.toString(), remaining_.toString()); }
 
   /**
@@ -321,6 +396,15 @@ public:
     }
     return remaining_.validate(data, start_offset, pos, left);
   }
+
+  int32_t getSize() const {
+    return first_.getSize() + remaining_.getSize();
+  }
+
+  void write(Buffer::Instance& to) const {
+    first_.write(to);
+    remaining_.write(to);
+  };
 };
 
 // Terminal template definition for variadic Sequence template.
@@ -333,10 +417,16 @@ public:
                                      uint64_t&) {
     return Message::ValidationOK;
   }
+
+  int32_t getSize() const { return 0; }
+  void write(Buffer::Instance&) const {};
 };
 
 template <typename... Types> class MessageImpl : public Message, public Sequence<Types...> {
 public:
+  MessageImpl() = default;
+  explicit MessageImpl(Types... fields): Sequence<Types...>(std::move(fields)...) {}
+
   ~MessageImpl() override = default;
   bool read(const Buffer::Instance& data, const uint64_t length) override {
     // Do not call read unless validation was successful.
@@ -354,8 +444,31 @@ public:
   }
   std::string toString() const override { return Sequence<Types...>::toString(); }
 
+  void write(Buffer::Instance& to, char identifier) const override {
+    to.writeByte(identifier);
+    to.writeBEInt(Sequence<Types...>::getSize() + 4);
+    Sequence<Types...>::write(to);
+  }
+
 private:
   // Message::ValidationResult validation_result_;
+};
+
+template<>
+class MessageImpl<> : public Message {
+public:
+  ~MessageImpl() override = default;
+
+  bool read(const Buffer::Instance&, const uint64_t) override { return true; }
+  Message::ValidationResult validate(const Buffer::Instance&, const uint64_t, const uint64_t) override {
+    return ValidationOK;
+  }
+
+  std::string toString() const override { return ""; }
+  void write(Buffer::Instance& to, char identifier) const override {
+    to.writeByte(identifier);
+    to.writeBEInt(4);
+  }
 };
 
 // Helper function to create pointer to a Sequence structure and is used by Postgres
@@ -363,6 +476,14 @@ private:
 template <typename... Types> std::unique_ptr<Message> createMsgBodyReader() {
   return std::make_unique<MessageImpl<Types...>>();
 }
+
+using ReadyForQueryMessageType = MessageImpl<Byte1>;
+using ErrorResponseMessageType = MessageImpl<Repeated<Sequence<Byte1, String>>, Byte1>;
+
+const inline ReadyForQueryMessageType READY_FOR_QUERY_MESSAGE(Byte1('I'));
+
+ErrorResponseMessageType createErrorResponseMessage(std::string error);
+
 
 } // namespace PostgresTDE
 } // namespace NetworkFilters

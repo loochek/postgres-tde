@@ -10,6 +10,7 @@
 
 #include "postgres_tde/api/filters/network/postgres_tde/postgres_tde.pb.h"
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_decoder.h"
+#include "postgres_tde/source/filters/network/postgres_tde/postgres_mutation_manager.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -119,8 +120,12 @@ public:
   void incTransactions() override;
   void incTransactionsCommit() override;
   void incTransactionsRollback() override;
-  void processQuery(Buffer::Instance&, const std::string&) override;
+  bool processQuery(Buffer::Instance&) override;
+  void processRowDescription(Buffer::Instance&) override;
   void processDataRow(Buffer::Instance&) override;
+  void processCommandComplete(Buffer::Instance&) override;
+  void processEmptyQueryResponse() override;
+  void processErrorResponse(Buffer::Instance&) override;
   bool onSSLRequest() override;
   bool shouldEncryptUpstream() const override;
   void sendUpstream(Buffer::Instance&) override;
@@ -128,6 +133,7 @@ public:
 
   Decoder::Result doDecode(Buffer::Instance& data, Buffer::Instance& orig_data, bool);
   DecoderPtr createDecoder(DecoderCallbacks* callbacks);
+  MutationManagerPtr createMutationManager();
   void setDecoder(std::unique_ptr<Decoder> decoder) { decoder_ = std::move(decoder); }
   Decoder* getDecoder() const { return decoder_.get(); }
 
@@ -150,6 +156,7 @@ private:
   Buffer::OwnedImpl backend_mutation_buffer_;
 
   std::unique_ptr<Decoder> decoder_;
+  std::unique_ptr<MutationManager> mutation_manager_;
 };
 
 } // namespace PostgresTDE

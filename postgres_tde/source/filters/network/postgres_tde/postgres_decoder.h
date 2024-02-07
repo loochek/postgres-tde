@@ -41,14 +41,22 @@ public:
   enum class ErrorType { Error, Fatal, Panic, Unknown };
   virtual void incErrors(ErrorType) PURE;
 
-  virtual void processQuery(Buffer::Instance& replace_message, const std::string&) PURE;
+  virtual bool processQuery(Buffer::Instance& replace_message) PURE;
+
+  virtual void processRowDescription(Buffer::Instance& replace_message) PURE;
   virtual void processDataRow(Buffer::Instance& replace_message) PURE;
+
+  virtual void processCommandComplete(Buffer::Instance& replace_message) PURE;
+  virtual void processEmptyQueryResponse() PURE;
+  virtual void processErrorResponse(Buffer::Instance&) PURE;
 
   virtual bool onSSLRequest() PURE;
   virtual bool shouldEncryptUpstream() const PURE;
   virtual void sendUpstream(Buffer::Instance&) PURE;
   virtual bool encryptUpstream(bool, Buffer::Instance&) PURE;
 };
+
+class MutationManager;
 
 // Postgres message decoder.
 class Decoder {
@@ -161,7 +169,11 @@ protected:
   void decodeFrontendTerminate();
   void decodeErrorNotice(MsgParserDict& types);
   void onQuery();
+  void onRowDescription();
   void onDataRow();
+  void onCommandComplete();
+  void onEmptyQueryResponse();
+  void onErrorResponse();
   void onParse();
   void onStartup();
 
@@ -182,6 +194,7 @@ protected:
   std::string message_;
   uint32_t message_len_{};
   Buffer::OwnedImpl replace_message_;
+  bool omit_{false};
 
   bool encrypted_{false}; // tells if exchange is encrypted
 

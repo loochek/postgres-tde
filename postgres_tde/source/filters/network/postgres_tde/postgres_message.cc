@@ -148,6 +148,26 @@ Message::ValidationResult VarByteN::validate(const Buffer::Instance& data, const
   return Message::ValidationOK;
 }
 
+ErrorResponseMessageType createErrorResponseMessage(std::string error) {
+  std::vector<std::unique_ptr<Sequence<Byte1, String>>> errorBody;
+  errorBody.emplace_back(
+    std::make_unique<Sequence<Byte1, String>>(
+      Byte1('S'),
+      String("ERROR")
+    )
+  );
+  errorBody.emplace_back(
+    std::make_unique<Sequence<Byte1, String>>(
+      Byte1('M'),
+      String(std::move(error))
+    )
+  );
+  return ErrorResponseMessageType(
+    Repeated<Sequence<Byte1, String>>(std::move(errorBody)),
+    Byte1('\0')
+  );
+}
+
 } // namespace PostgresTDE
 } // namespace NetworkFilters
 } // namespace Extensions

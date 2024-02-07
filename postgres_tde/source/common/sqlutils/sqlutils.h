@@ -25,6 +25,26 @@ public:
    **/
   static bool setMetadata(const std::string& query, const DecoderAttributes& attr,
                           ProtobufWkt::Struct& metadata);
+
+  static bool dumpQuery(const hsql::SQLParserResult& query, std::string& result);
+
+private:
+  static bool dumpStatement(std::stringstream &out, const hsql::SQLStatement* stmt);
+  static bool dumpExpression(std::stringstream &out, const hsql::Expr* expr);
+
+  static bool dumpOperatorExpression(std::stringstream &out, const hsql::Expr* expr);
+  static bool dumpArrayExpression(std::stringstream &out, const hsql::Expr* expr);
+
+  static bool dumpSelectStatement(std::stringstream &out, const hsql::SelectStatement* stmt);
+  static bool dumpInsertStatement(std::stringstream &out, const hsql::InsertStatement* stmt);
+  static bool dumpUpdateStatement(std::stringstream &out, const hsql::UpdateStatement* stmt);
+  static bool dumpDeleteStatement(std::stringstream &out, const hsql::DeleteStatement* stmt);
+
+//  static std::string dumpCreateStatement(const hsql::SQLStatement& stmt);
+//  static std::string dumpAlterStatement(const hsql::SQLStatement& stmt);
+//  static std::string dumpDropStatement(const hsql::SQLStatement& stmt);
+
+  static std::string operatorToString(hsql::OperatorType type);
 };
 
 } // namespace SQLUtils
