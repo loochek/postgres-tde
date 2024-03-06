@@ -7,7 +7,8 @@
 #include "source/common/common/logger.h"
 
 #include "postgres_tde/source/common/sqlutils/sqlutils.h"
-#include "postgres_tde/source/filters/network/postgres_tde/postgres_mutator.h"
+#include "postgres_tde/source/filters/network/postgres_tde/config/dummy_config.h"
+#include "postgres_tde/source/filters/network/postgres_tde/mutators/mutator.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -19,7 +20,7 @@ class MutationManager {
 public:
   virtual ~MutationManager() = default;
 
-  virtual QueryProcessingResult processQuery(std::string&) PURE;
+  virtual Result processQuery(std::string&) PURE;
 
   virtual void processRowDescription(Buffer::Instance&) PURE;
   virtual void processDataRow(Buffer::Instance&) PURE;
@@ -35,7 +36,7 @@ class MutationManagerImpl : public MutationManager, Logger::Loggable<Logger::Id:
 public:
   MutationManagerImpl();
 
-  QueryProcessingResult processQuery(std::string& query) override;
+  Result processQuery(std::string& query) override;
 
   void processRowDescription(Buffer::Instance& data) override;
   void processDataRow(Buffer::Instance& data) override;
@@ -46,6 +47,8 @@ public:
 
 protected:
   std::vector<MutatorPtr> mutator_chain_;
+
+  DummyConfig config_;
 };
 
 } // namespace PostgresTDE

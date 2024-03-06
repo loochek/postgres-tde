@@ -121,6 +121,7 @@ public:
   void incTransactionsCommit() override;
   void incTransactionsRollback() override;
   bool processQuery(Buffer::Instance&) override;
+  bool processParse(Buffer::Instance&) override;
   void processRowDescription(Buffer::Instance&) override;
   void processDataRow(Buffer::Instance&) override;
   void processCommandComplete(Buffer::Instance&) override;

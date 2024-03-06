@@ -40,7 +40,8 @@ Network::FilterStatus PostgresFilter::onData(Buffer::Instance& data, bool) {
   data.drain(data.length());
 
   Decoder::Result result = doDecode(frontend_validation_buffer_, frontend_mutation_buffer_, true);
-  uint32_t mutated_data_size = frontend_mutation_buffer_.length() - frontend_validation_buffer_.length();
+  uint32_t mutated_data_size =
+      frontend_mutation_buffer_.length() - frontend_validation_buffer_.length();
 
   switch (result) {
   case Decoder::Result::NeedMoreData:
@@ -76,7 +77,8 @@ Network::FilterStatus PostgresFilter::onWrite(Buffer::Instance& data, bool end_s
   data.drain(data.length());
 
   Decoder::Result result = doDecode(backend_validation_buffer_, backend_mutation_buffer_, false);
-  uint32_t mutated_data_size = backend_mutation_buffer_.length() - backend_validation_buffer_.length();
+  uint32_t mutated_data_size =
+      backend_mutation_buffer_.length() - backend_validation_buffer_.length();
 
   switch (result) {
   case Decoder::Result::NeedMoreData:
@@ -214,21 +216,27 @@ void PostgresFilter::incStatements(StatementType type) {
 
 bool PostgresFilter::processQuery(Buffer::Instance& replace_message) {
   std::string query = replace_message.toString();
-  query.pop_back();  // remove null terminator specified by the postgres string type
+  query.pop_back(); // remove null terminator specified by the postgres string type
 
-  QueryProcessingResult result = mutation_manager_->processQuery(query);
+  Result result = mutation_manager_->processQuery(query);
   if (result.isOk) {
     replace_message.drain(replace_message.length());
-    replace_message.add(query.data(), query.length() + 1);  // taking null terminator into account
+    replace_message.add(query.data(), query.length() + 1); // taking null terminator into account
     return true;
   } else {
     Buffer::OwnedImpl injectBuffer;
-    ErrorResponseMessageType error_response = createErrorResponseMessage(result.error);
-    error_response.write(injectBuffer, 'E');
-    READY_FOR_QUERY_MESSAGE.write(injectBuffer, 'Z');
+    createErrorResponseMessage(result.error).write(injectBuffer);
+    READY_FOR_QUERY_MESSAGE.write(injectBuffer);
     write_callbacks_->injectWriteDataToFilterChain(injectBuffer, false);
     return false;
   }
+}
+
+bool PostgresFilter::processParse(Buffer::Instance&) {
+  Buffer::OwnedImpl injectBuffer;
+  createErrorResponseMessage("postgres_tde: prepared statements are not supported").write(injectBuffer);
+  write_callbacks_->injectWriteDataToFilterChain(injectBuffer, false);
+  return false;
 }
 
 void PostgresFilter::processRowDescription(Buffer::Instance& replace_message) {
@@ -243,9 +251,7 @@ void PostgresFilter::processCommandComplete(Buffer::Instance& replace_message) {
   mutation_manager_->processCommandComplete(replace_message);
 }
 
-void PostgresFilter::processEmptyQueryResponse() {
-  mutation_manager_->processEmptyQueryResponse();
-}
+void PostgresFilter::processEmptyQueryResponse() { mutation_manager_->processEmptyQueryResponse(); }
 
 void PostgresFilter::processErrorResponse(Buffer::Instance& replace_message) {
   mutation_manager_->processErrorResponse(replace_message);
@@ -301,10 +307,9 @@ void PostgresFilter::sendUpstream(Buffer::Instance& data) {
 
 bool PostgresFilter::encryptUpstream(bool upstream_agreed, Buffer::Instance& data) {
   bool encrypted = false;
-  RELEASE_ASSERT(
-      config_->upstream_ssl_ !=
-          envoy::extensions::filters::network::postgres_tde::PostgresTDE::DISABLE,
-      "encryptUpstream should not be called when upstream SSL is disabled.");
+  RELEASE_ASSERT(config_->upstream_ssl_ !=
+                     envoy::extensions::filters::network::postgres_tde::PostgresTDE::DISABLE,
+                 "encryptUpstream should not be called when upstream SSL is disabled.");
   if (!upstream_agreed) {
     ENVOY_CONN_LOG(info,
                    "postgres_proxy: upstream server rejected request to establish SSL connection. "
@@ -333,7 +338,8 @@ bool PostgresFilter::encryptUpstream(bool upstream_agreed, Buffer::Instance& dat
   return encrypted;
 }
 
-Decoder::Result PostgresFilter::doDecode(Buffer::Instance& parse_data, Buffer::Instance& orig_data, bool frontend) {
+Decoder::Result PostgresFilter::doDecode(Buffer::Instance& parse_data, Buffer::Instance& orig_data,
+                                         bool frontend) {
   // Keep processing data until buffer is empty or decoder says
   // that it cannot process data in the buffer.
   bool first_invocation = true;
