@@ -42,6 +42,7 @@ public:
   virtual void incErrors(ErrorType) PURE;
 
   virtual bool processQuery(Buffer::Instance& replace_message) PURE;
+  virtual bool processParse(Buffer::Instance& replace_message) PURE;
 
   virtual void processRowDescription(Buffer::Instance& replace_message) PURE;
   virtual void processDataRow(Buffer::Instance& replace_message) PURE;

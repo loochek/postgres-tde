@@ -49,7 +49,7 @@ public:
   // the Postgres message.
   virtual std::string toString() const PURE;
 
-  virtual void write(Buffer::Instance&, char) const PURE;
+  virtual void write(Buffer::Instance&) const PURE;
 
 protected:
   ValidationResult validation_result_{ValidationNeedMoreData};
@@ -60,7 +60,7 @@ protected:
 template <typename T> class Int {
 public:
   Int() = default;
-  Int(T value): value_(value) {};
+  Int(T value) : value_(value){};
 
   /**
    * Read integer value from data buffer.
@@ -98,13 +98,9 @@ public:
 
   std::string toString() const { return fmt::format("[{}]", value_); }
 
-  int32_t getSize() const {
-    return sizeof(T);
-  }
+  int32_t getSize() const { return sizeof(T); }
 
-  void write(Buffer::Instance& to) const {
-      to.writeBEInt(value_);
-  };
+  void write(Buffer::Instance& to) const { to.writeBEInt(value_); };
 
   T get() const { return value_; }
 
@@ -123,7 +119,7 @@ using Byte1 = Int<char>;
 class String {
 public:
   String() = default;
-  explicit String(std::string str) : value_(std::move(str)) {};
+  explicit String(std::string str) : value_(std::move(str)){};
 
   /**
    * See above for parameter and return value description.
@@ -133,13 +129,9 @@ public:
   Message::ValidationResult validate(const Buffer::Instance&, const uint64_t start_offset,
                                      uint64_t&, uint64_t&);
 
-  int32_t getSize() const {
-      return value_.size() + 1;
-  }
+  int32_t getSize() const { return value_.size() + 1; }
 
-  void write(Buffer::Instance& to) const {
-      to.add(value_.data(), value_.size() + 1);
-  };
+  void write(Buffer::Instance& to) const { to.add(value_.data(), value_.size() + 1); };
 
 private:
   // start_ and end_ are set by validate method.
@@ -159,13 +151,9 @@ public:
   std::string toString() const;
   Message::ValidationResult validate(const Buffer::Instance&, const uint64_t, uint64_t&, uint64_t&);
 
-  int32_t getSize() const {
-      return value_.size();
-  }
+  int32_t getSize() const { return value_.size(); }
 
-  void write(Buffer::Instance& to) const {
-      to.add(value_.data(), value_.size());
-  };
+  void write(Buffer::Instance& to) const { to.add(value_.data(), value_.size()); };
 
 private:
   std::vector<uint8_t> value_;
@@ -191,13 +179,11 @@ public:
   std::string toString() const;
   Message::ValidationResult validate(const Buffer::Instance&, const uint64_t, uint64_t&, uint64_t&);
 
-  int32_t getSize() const {
-      return value_.size() + 4;
-  }
+  int32_t getSize() const { return value_.size() + 4; }
 
   void write(Buffer::Instance& to) const {
-      to.writeBEInt(len_);
-      to.add(value_.data(), value_.size());
+    to.writeBEInt(len_);
+    to.add(value_.data(), value_.size());
   };
 
 private:
@@ -370,7 +356,8 @@ template <typename FirstField, typename... Remaining> class Sequence<FirstField,
 
 public:
   Sequence() = default;
-  explicit Sequence(FirstField first, Remaining... remaining): first_(std::move(first)), remaining_(std::move(remaining)...) {}
+  explicit Sequence(FirstField first, Remaining... remaining)
+      : first_(std::move(first)), remaining_(std::move(remaining)...) {}
 
   std::string toString() const { return absl::StrCat(first_.toString(), remaining_.toString()); }
 
@@ -397,9 +384,7 @@ public:
     return remaining_.validate(data, start_offset, pos, left);
   }
 
-  int32_t getSize() const {
-    return first_.getSize() + remaining_.getSize();
-  }
+  int32_t getSize() const { return first_.getSize() + remaining_.getSize(); }
 
   void write(Buffer::Instance& to) const {
     first_.write(to);
@@ -425,7 +410,7 @@ public:
 template <typename... Types> class MessageImpl : public Message, public Sequence<Types...> {
 public:
   MessageImpl() = default;
-  explicit MessageImpl(Types... fields): Sequence<Types...>(std::move(fields)...) {}
+  explicit MessageImpl(Types... fields) : Sequence<Types...>(std::move(fields)...) {}
 
   ~MessageImpl() override = default;
   bool read(const Buffer::Instance& data, const uint64_t length) override {
@@ -442,33 +427,55 @@ public:
     validation_result_ = Sequence<Types...>::validate(data, start_pos, pos, left);
     return validation_result_;
   }
+
   std::string toString() const override { return Sequence<Types...>::toString(); }
 
-  void write(Buffer::Instance& to, char identifier) const override {
+  using Message::write;
+  void write(Buffer::Instance& to, char identifier) const {
     to.writeByte(identifier);
     to.writeBEInt(Sequence<Types...>::getSize() + 4);
     Sequence<Types...>::write(to);
+  }
+
+  void write(Buffer::Instance&) const override {
+    // Messages without identifier are validate-only and should not be written
+    ASSERT(false);
   }
 
 private:
   // Message::ValidationResult validation_result_;
 };
 
-template<>
-class MessageImpl<> : public Message {
+template <> class MessageImpl<> : public Message {
 public:
   ~MessageImpl() override = default;
 
   bool read(const Buffer::Instance&, const uint64_t) override { return true; }
-  Message::ValidationResult validate(const Buffer::Instance&, const uint64_t, const uint64_t) override {
+  Message::ValidationResult validate(const Buffer::Instance&, const uint64_t,
+                                     const uint64_t) override {
     return ValidationOK;
   }
 
   std::string toString() const override { return ""; }
-  void write(Buffer::Instance& to, char identifier) const override {
+
+  using Message::write;
+  void write(Buffer::Instance& to, char identifier) const {
     to.writeByte(identifier);
     to.writeBEInt(4);
   }
+
+  void write(Buffer::Instance&) const override {
+    // Messages without identifier are validate-only and should not be written
+    ASSERT(false);
+  }
+};
+
+template <char Identifier, typename... Types> class OutgoingMessage : public MessageImpl<Types...> {
+public:
+  OutgoingMessage() = default;
+  explicit OutgoingMessage(Types... fields) : MessageImpl<Types...>(std::move(fields)...) {}
+
+  void write(Buffer::Instance& to) const override { MessageImpl<Types...>::write(to, Identifier); }
 };
 
 // Helper function to create pointer to a Sequence structure and is used by Postgres
@@ -477,13 +484,12 @@ template <typename... Types> std::unique_ptr<Message> createMsgBodyReader() {
   return std::make_unique<MessageImpl<Types...>>();
 }
 
-using ReadyForQueryMessageType = MessageImpl<Byte1>;
-using ErrorResponseMessageType = MessageImpl<Repeated<Sequence<Byte1, String>>, Byte1>;
+using ReadyForQueryMessageType = OutgoingMessage<'Z', Byte1>;
+using ErrorResponseMessageType = OutgoingMessage<'E', Repeated<Sequence<Byte1, String>>, Byte1>;
 
 const inline ReadyForQueryMessageType READY_FOR_QUERY_MESSAGE(Byte1('I'));
 
 ErrorResponseMessageType createErrorResponseMessage(std::string error);
-
 
 } // namespace PostgresTDE
 } // namespace NetworkFilters

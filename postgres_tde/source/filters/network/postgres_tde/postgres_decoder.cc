@@ -581,11 +581,7 @@ void DecoderImpl::decodeBackendNoticeResponse() { decodeErrorNotice(BE_notices_)
 // Int32: Specifies the object ID of
 // the parameter data type. Placing a zero here is equivalent to leaving the type unspecified.
 void DecoderImpl::onParse() {
-  // The first two strings are separated by \0.
-  // The first string is optional. If no \0 is found it means
-  // that the message contains query string only.
-//  std::vector<std::string> query_parts = absl::StrSplit(message_, absl::ByChar('\0'));
-//  callbacks_->processQuery(replace_message_);
+  omit_ = !callbacks_->processParse(replace_message_);
 }
 
 void DecoderImpl::onQuery() {

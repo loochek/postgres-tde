@@ -1,5 +1,5 @@
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_mutation_manager.h"
-#include "postgres_tde/source/common/sqlutils/sqlutils.h"
+#include "postgres_tde/source/filters/network/postgres_tde/mutators/blind_index.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -7,10 +7,11 @@ namespace NetworkFilters {
 namespace PostgresTDE {
 
 MutationManagerImpl::MutationManagerImpl() {
-  // TODO: add mutators to the chain
+  mutator_chain_.push_back(std::make_unique<BlindIndexMutator>(&config_));
+  dumper_ = std::make_unique<Common::SQLUtils::DumpVisitor>();
 }
 
-QueryProcessingResult
+Result
 PostgresTDE::MutationManagerImpl::processQuery(std::string& query) {
   ENVOY_LOG(error, "MutationManagerImpl::processQuery - got {}", query);
 
@@ -18,24 +19,24 @@ PostgresTDE::MutationManagerImpl::processQuery(std::string& query) {
   hsql::SQLParser::parse(query, &parsed_query);
   if (!parsed_query.isValid()) {
     // Pass incorrect queries to the backend in order to get a detailed error message
-    return QueryProcessingResult::ok;
+    return Result::ok;
   }
 
   for (MutatorPtr& mutator : mutator_chain_) {
-    QueryProcessingResult result = mutator->mutateQuery(parsed_query);
+    Result result = mutator->mutateQuery(parsed_query);
     if (!result.isOk) {
       return result;
     }
   }
 
-  std::string mutated_query_str;
-  if (Common::SQLUtils::SQLUtils::dumpQuery(parsed_query, mutated_query_str)) {
-    ENVOY_LOG(error, "mutated query: {}", mutated_query_str);
-    query = std::move(mutated_query_str);
-    return QueryProcessingResult::ok;
-  } else {
-    return QueryProcessingResult::makeError("postgres_tde: unable to dump query");
+  Result result = dumper_->visitQuery(parsed_query);
+  if (!result.isOk) {
+    return result;
   }
+
+  query = dumper_->getResult();
+  ENVOY_LOG(error, "mutated query: {}", query);
+  return Result::ok;
 }
 
 void MutationManagerImpl::processRowDescription(Buffer::Instance& data) {
