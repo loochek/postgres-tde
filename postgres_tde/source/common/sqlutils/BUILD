@@ -12,10 +12,12 @@ envoy_cc_library(
     srcs = [
         "sqlutils.cc",
         "ast/visitor.cc",
+        "ast/dump_visitor.cc",
     ],
     hdrs = [
         "sqlutils.h",
         "ast/visitor.h",
+        "ast/dump_visitor.h",
     ],
     external_deps = ["sqlparser"],
     deps = [

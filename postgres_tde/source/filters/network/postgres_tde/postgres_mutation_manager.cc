@@ -1,5 +1,4 @@
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_mutation_manager.h"
-#include "postgres_tde/source/common/sqlutils/sqlutils.h"
 #include "postgres_tde/source/filters/network/postgres_tde/mutators/blind_index.h"
 
 namespace Envoy {
@@ -9,6 +8,7 @@ namespace PostgresTDE {
 
 MutationManagerImpl::MutationManagerImpl() {
   mutator_chain_.push_back(std::make_unique<BlindIndexMutator>(&config_));
+  dumper_ = std::make_unique<Common::SQLUtils::DumpVisitor>();
 }
 
 Result
@@ -29,14 +29,14 @@ PostgresTDE::MutationManagerImpl::processQuery(std::string& query) {
     }
   }
 
-  std::string mutated_query_str;
-  if (Common::SQLUtils::SQLUtils::dumpQuery(parsed_query, mutated_query_str)) {
-    ENVOY_LOG(error, "mutated query: {}", mutated_query_str);
-    query = std::move(mutated_query_str);
-    return Result::ok;
-  } else {
-    return Result::makeError("postgres_tde: unable to dump query");
+  Result result = dumper_->visitQuery(parsed_query);
+  if (!result.isOk) {
+    return result;
   }
+
+  query = dumper_->getResult();
+  ENVOY_LOG(error, "mutated query: {}", query);
+  return Result::ok;
 }
 
 void MutationManagerImpl::processRowDescription(Buffer::Instance& data) {

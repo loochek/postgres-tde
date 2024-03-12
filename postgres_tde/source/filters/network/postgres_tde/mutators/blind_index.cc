@@ -12,22 +12,12 @@ namespace PostgresTDE {
 BlindIndexMutator::BlindIndexMutator(DatabaseEncryptionConfig *config) : config_(config) {}
 
 Result BlindIndexMutator::mutateQuery(hsql::SQLParserResult& query) {
-  Result result = Visitor::visitQuery(query);
-  if (!result.isOk) {
-    return result;
-  }
-
-  result = mutateComparisons();
-  if (!result.isOk) {
-    return result;
-  }
-
-  result = mutateGroupByExpressions();
-  if (!result.isOk) {
-    return result;
-  }
-
-  return result;
+  CHECK_RESULT(Visitor::visitQuery(query));
+  CHECK_RESULT(mutateComparisons());
+  CHECK_RESULT(mutateGroupByExpressions());
+  CHECK_RESULT(mutateInsertStatement());
+  CHECK_RESULT(mutateUpdateStatement());
+  return Result::ok;
 }
 
 void BlindIndexMutator::mutateResult() {}
@@ -96,7 +86,7 @@ Result BlindIndexMutator::mutateComparisons() {
 
     if (column->table == nullptr) {
       return Result::makeError(
-        fmt::format("postgres_tde: unable to determine the source of column {}. Please specify an explicit table/alias reference", column->name));
+        fmt::format("postgres_tde: unable to determine the source of column '{}'. Please specify an explicit table/alias reference", column->name));
     }
 
     const std::string& table_name = getTableNameByAlias(column->table);
@@ -107,11 +97,41 @@ Result BlindIndexMutator::mutateComparisons() {
     }
 
     const std::string& bi_column_name = column_config->BIColumnName();
-    replaceHyriseName(column, bi_column_name);
+    free(column->name);
+    column->name = Common::Utils::makeOwnedCString(bi_column_name);
 
-    replaceLiteralWithHash(literal, column_config);
+    hsql::Expr* bi_literal = createHashLiteral(literal, column_config);
+    delete expr->expr2;
+    expr->expr2 = bi_literal;
   }
 
+  return Result::ok;
+}
+
+Result BlindIndexMutator::visitInsertStatement(hsql::InsertStatement* stmt) {
+  switch (stmt->type) {
+  case hsql::kInsertValues: {
+    if (stmt->columns == nullptr && config_->hasTDEEnabled(stmt->tableName)) {
+      return Result::makeError("postgres_tde: columns definition for INSERT is required for TDE-enabled tables");
+    }
+
+    insert_mutation_candidates_.push_back(stmt);
+    return Visitor::visitInsertStatement(stmt);
+  }
+  case hsql::kInsertSelect:
+    if (config_->hasTDEEnabled(stmt->tableName)) {
+      return Result::makeError("postgres_tde: INSERT INTO SELECT is not supported for TDE-enabled tables");
+    }
+
+    return Visitor::visitInsertStatement(stmt);
+  default:
+    assert(false);
+  }
+}
+
+Result BlindIndexMutator::visitUpdateStatement(hsql::UpdateStatement* stmt) {
+  CHECK_RESULT(Visitor::visitUpdateStatement(stmt));
+  update_mutation_candidates_.push_back(stmt);
   return Result::ok;
 }
 
@@ -136,44 +156,122 @@ Result BlindIndexMutator::mutateGroupByExpressions() {
     }
 
     const std::string& bi_column_name = column_config->BIColumnName();
-    replaceHyriseName(column, bi_column_name);
+    free(column->name);
+    column->name = Common::Utils::makeOwnedCString(bi_column_name);
   }
 
   return Result::ok;
 }
 
-void BlindIndexMutator::replaceLiteralWithHash(hsql::Expr* expr, ColumnConfig *column_config) {
-  assert(expr->isLiteral());
+Result BlindIndexMutator::mutateInsertStatement() {
+  absl::Cleanup cleanup = [this]() {
+    insert_mutation_candidates_.clear();
+  };
 
-  switch (expr->type) {
+  for (hsql::InsertStatement* stmt: insert_mutation_candidates_) {
+    if (stmt->columns->size() != stmt->values->size()) {
+      return Result::makeError("postgres_tde: bad INSERT statement");
+    }
+
+    std::vector<char*> bi_columns;
+    std::vector<hsql::Expr*> bi_values;
+    absl::Cleanup cleanup2 = [&]() {
+      for (char* column: bi_columns) {
+        free(column);
+      }
+      for (hsql::Expr* value: bi_values) {
+        free(value);
+      }
+    };
+
+    for (size_t i = 0; i < stmt->columns->size(); i++) {
+      char* column = (*stmt->columns)[i];
+      hsql::Expr* value = (*stmt->values)[i];
+
+      ColumnConfig * column_config = config_->getColumnConfig(stmt->tableName, column);
+      if (column_config == nullptr || !column_config->hasBlindIndex()) {
+        continue;
+      }
+
+      if (!value->isLiteral()) {
+        return Result::makeError("postgres_tde: only literals can be used as INSERT values for blind-indexed columns");
+      }
+
+      bi_columns.push_back(Common::Utils::makeOwnedCString(column_config->BIColumnName()));
+      bi_values.push_back(createHashLiteral(value, column_config));
+    }
+
+    stmt->columns->insert(stmt->columns->end(), bi_columns.begin(), bi_columns.end());
+    bi_columns.clear();
+    stmt->values->insert(stmt->values->end(), bi_values.begin(), bi_values.end());
+    bi_values.clear();
+  }
+
+  return Result::ok;
+}
+
+Result BlindIndexMutator::mutateUpdateStatement() {
+  absl::Cleanup cleanup = [this]() {
+    update_mutation_candidates_.clear();
+  };
+
+  for (hsql::UpdateStatement* stmt: update_mutation_candidates_) {
+    std::vector<hsql::UpdateClause*> bi_updates;
+    absl::Cleanup cleanup2 = [&]() {
+      for (hsql::UpdateClause* update : bi_updates) {
+        free(update->column);
+        delete update->value;
+        delete update;
+      }
+    };
+
+    for (hsql::UpdateClause* update : *stmt->updates) {
+      ColumnConfig * column_config = config_->getColumnConfig(stmt->table->name, update->column);
+      if (column_config == nullptr || !column_config->hasBlindIndex()) {
+        continue;
+      }
+
+      if (!update->value->isLiteral()) {
+        return Result::makeError(fmt::format("postgres_tde: only literals can be used as UPDATE values for blind-indexed columns"));
+      }
+
+      bi_updates.push_back(new hsql::UpdateClause {Common::Utils::makeOwnedCString(column_config->BIColumnName()), createHashLiteral(update->value, column_config)});
+    }
+
+    stmt->updates->insert(stmt->updates->end(), bi_updates.begin(), bi_updates.end());
+    bi_updates.clear();
+  }
+
+  return Result::ok;
+}
+
+hsql::Expr* BlindIndexMutator::createHashLiteral(hsql::Expr* orig_literal, ColumnConfig *column_config) {
+  assert(orig_literal->isLiteral());
+
+  switch (orig_literal->type) {
   case hsql::kExprLiteralNull:
     // do nothing with null values
-    return;
+    return hsql::Expr::makeNullLiteral();
   case hsql::kExprLiteralString: {
     const std::string& hmac_hex_str = generateHMACString(
-        std::string_view(static_cast<const char*>(expr->name), strlen(expr->name) + 1),
+        std::string_view(static_cast<const char*>(orig_literal->name), strlen(orig_literal->name) + 1),
         column_config
     );
-    replaceHyriseName(expr, hmac_hex_str);
-    return;
+    return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(hmac_hex_str));
   }
   case hsql::kExprLiteralInt: {
     const std::string& hmac_hex_str = generateHMACString(
-        std::string_view(reinterpret_cast<const char*>(&expr->ival), sizeof(expr->ival)),
+        std::string_view(reinterpret_cast<const char*>(&orig_literal->ival), sizeof(orig_literal->ival)),
         column_config
     );
-    replaceHyriseName(expr, hmac_hex_str);
-    expr->type = hsql::kExprLiteralString;
-    return;
+    return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(hmac_hex_str));
   }
   case hsql::kExprLiteralFloat: {
     const std::string& hmac_hex_str = generateHMACString(
-        std::string_view(reinterpret_cast<const char*>(&expr->fval), sizeof(expr->fval)),
+        std::string_view(reinterpret_cast<const char*>(&orig_literal->fval), sizeof(orig_literal->fval)),
         column_config
     );
-    replaceHyriseName(expr, hmac_hex_str);
-    expr->type = hsql::kExprLiteralString;
-    return;
+    return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(hmac_hex_str));
   }
   default:
     assert(false);
@@ -187,12 +285,6 @@ std::string BlindIndexMutator::generateHMACString(absl::string_view data, Column
   std::string hmac_hex_str = std::string("\\x");
   hmac_hex_str.append(absl::BytesToHexString(absl::string_view(reinterpret_cast<const char*>(hmac.data()), hmac.size())));
   return hmac_hex_str;
-}
-
-void BlindIndexMutator::replaceHyriseName(hsql::Expr* expr, const std::string& str) {
-  free(expr->name);
-  expr->name = static_cast<char*>(calloc(str.size() + 1, sizeof(char)));
-  memcpy(expr->name, str.data(), str.size());
 }
 
 } // namespace PostgresTDE

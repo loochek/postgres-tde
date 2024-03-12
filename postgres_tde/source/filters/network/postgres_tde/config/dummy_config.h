@@ -60,12 +60,16 @@ public:
     columns_["timezone"]   = DummyColumnConfig("timezone",   true,  false);
   }
 
-  virtual ColumnConfig* getColumnConfig(std::string table, std::string name) {
-    if (table == "city" && columns_.find(name) != columns_.end()) {
+  ColumnConfig* getColumnConfig(const std::string& table, const std::string& name) override {
+    if (table == "city_bi_test" && columns_.find(name) != columns_.end()) {
       return &columns_[name];
     } else {
       return nullptr;
     }
+  }
+
+  bool hasTDEEnabled(const std::string& table) override {
+    return table == "city_bi_test";
   }
 
 private:

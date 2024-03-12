@@ -5,6 +5,13 @@
 #include "source/common/common/logger.h"
 #include "postgres_tde/source/common/utils/utils.h"
 
+#define CHECK_RESULT(EXPR) { \
+  Result result = (EXPR); \
+  if (!result.isOk) { \
+    return result; \
+  } \
+}
+
 namespace Envoy {
 namespace Extensions {
 namespace Common {
@@ -14,11 +21,12 @@ using Common::Utils::Result;
 
 // Helper class that provides base traversal routines for SQL query's AST
 class Visitor : public Logger::Loggable<Logger::Id::filter> {
-protected:
+public:
   virtual ~Visitor() = default;
 
   virtual Result visitQuery(hsql::SQLParserResult& query);
 
+protected:
   virtual Result visitStatement(hsql::SQLStatement* stmt);
   virtual Result visitExpression(hsql::Expr* expr);
 
@@ -32,10 +40,6 @@ protected:
   virtual Result visitUpdateStatement(hsql::UpdateStatement* stmt);
   virtual Result visitDeleteStatement(hsql::DeleteStatement* stmt);
 
-//  static std::string dumpCreateStatement(const hsql::SQLStatement& stmt);
-//  static std::string dumpAlterStatement(const hsql::SQLStatement& stmt);
-//  static std::string dumpDropStatement(const hsql::SQLStatement& stmt);
-
   const std::string& getTableNameByAlias(const std::string& alias);
 
 protected:
@@ -45,6 +49,8 @@ protected:
 
   std::unordered_map<std::string, std::string> alias2table_;
 };
+
+using VisitorPtr = std::unique_ptr<Visitor>;
 
 } // namespace SQLUtils
 } // namespace Common

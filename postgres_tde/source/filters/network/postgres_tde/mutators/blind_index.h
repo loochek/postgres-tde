@@ -23,19 +23,24 @@ protected:
   Result visitExpression(hsql::Expr* expr) override;
   Result visitOperatorExpression(hsql::Expr* expr) override;
 
+  Result visitInsertStatement(hsql::InsertStatement* stmt) override;
+  Result visitUpdateStatement(hsql::UpdateStatement* stmt) override;
+
   Result mutateComparisons();
   Result mutateGroupByExpressions();
+  Result mutateInsertStatement();
+  Result mutateUpdateStatement();
 
-  void replaceLiteralWithHash(hsql::Expr* expr, ColumnConfig *column_config);
+  hsql::Expr* createHashLiteral(hsql::Expr* orig_literal, ColumnConfig *column_config);
   std::string generateHMACString(absl::string_view data, ColumnConfig *column_config);
-
-  void replaceHyriseName(hsql::Expr* expr, const std::string& str);
 
 protected:
   DatabaseEncryptionConfig *config_;
 
   std::vector<hsql::Expr*> comparison_mutation_candidates_;
   std::vector<hsql::Expr*> group_by_mutation_candidates_;
+  std::vector<hsql::InsertStatement*> insert_mutation_candidates_;
+  std::vector<hsql::UpdateStatement*> update_mutation_candidates_;
 };
 
 } // namespace PostgresTDE

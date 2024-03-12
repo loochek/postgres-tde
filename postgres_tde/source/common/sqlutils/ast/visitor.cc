@@ -9,10 +9,7 @@ namespace SQLUtils {
 Result Visitor::visitQuery(hsql::SQLParserResult& query) {
   alias2table_.clear();
   for (hsql::SQLStatement *stmt : query.getStatements()) {
-    Result result = visitStatement(stmt);
-    if (!result.isOk) {
-      return result;
-    }
+    CHECK_RESULT(visitStatement(stmt));
   }
 
   return Result::ok;
@@ -53,8 +50,6 @@ Result Visitor::visitExpression(hsql::Expr* expr) {
 }
 
 Result Visitor::visitOperatorExpression(hsql::Expr* expr) {
-  Result result(true);
-
   switch (expr->opType) {
   case hsql::kOpPlus:
   case hsql::kOpMinus:
@@ -74,15 +69,8 @@ Result Visitor::visitOperatorExpression(hsql::Expr* expr) {
   case hsql::kOpAnd:
   case hsql::kOpOr:
   case hsql::kOpConcat:
-    result = visitExpression(expr->expr);
-    if (!result.isOk) {
-      return result;
-    }
-
-    result = visitExpression(expr->expr2);
-    if (!result.isOk) {
-      return result;
-    }
+    CHECK_RESULT(visitExpression(expr->expr));
+    CHECK_RESULT(visitExpression(expr->expr2));
     return Result::ok;
 
   case hsql::kOpNot:
@@ -92,16 +80,11 @@ Result Visitor::visitOperatorExpression(hsql::Expr* expr) {
     return visitExpression(expr->expr);
 
   case hsql::kOpIn:
-    result = visitExpression(expr->expr);
-    if (!result.isOk) {
-      return result;
-    }
+    CHECK_RESULT(visitExpression(expr->expr));
     for (hsql::Expr *exp: *expr->exprList) {
-      result = visitExpression(exp);
-      if (!result.isOk) {
-        return result;
-      }
+      CHECK_RESULT(visitExpression(exp));
     }
+
     return Result::ok;
 
   default:
@@ -130,55 +113,37 @@ Result Visitor::visitSelectStatement(hsql::SelectStatement* stmt) {
     return Result::makeError("postgres_tde: unsupported");
   }
 
-  if (stmt->fromTable != nullptr) {
-    Result result = visitTableRef(stmt->fromTable);
-    if (!result.isOk) {
-      return result;
-    }
-  }
-
   assert(stmt->selectList != nullptr);
   in_select_body_ = true;
   for (hsql::Expr *expr : *stmt->selectList) {
-    Result result = visitExpression(expr);
-    if (!result.isOk) {
-      return result;
-    }
+    CHECK_RESULT(visitExpression(expr));
   }
   in_select_body_ = false;
 
+  if (stmt->fromTable != nullptr) {
+    CHECK_RESULT(visitTableRef(stmt->fromTable));
+  }
+
   if (stmt->whereClause != nullptr) {
-    Result result = visitExpression(stmt->whereClause);
-    if (!result.isOk) {
-      return result;
-    }
+    CHECK_RESULT(visitExpression(stmt->whereClause));
   }
 
   if (stmt->groupBy != nullptr) {
     in_group_by_ = true;
     hsql::GroupByDescription* desc = stmt->groupBy;
     for (hsql::Expr* column_expr : *desc->columns) {
-      Result result = visitExpression(column_expr);
-      if (!result.isOk) {
-        return result;
-      }
+      CHECK_RESULT(visitExpression(column_expr));
     }
 
     if (desc->having != nullptr) {
-      Result result = visitExpression(desc->having);
-      if (!result.isOk) {
-        return result;
-      }
+      CHECK_RESULT(visitExpression(desc->having));
     }
     in_group_by_ = false;
   }
 
   if (stmt->order != nullptr) {
     for (hsql::OrderDescription* desc : *stmt->order) {
-      Result result = visitExpression(desc->expr);
-      if (!result.isOk) {
-        return result;
-      }
+      CHECK_RESULT(visitExpression(desc->expr));
     }
   }
 
@@ -197,31 +162,20 @@ Result Visitor::visitTableRef(hsql::TableRef* table_ref) {
     return visitSelectStatement(table_ref->select);
   case hsql::kTableJoin: {
     hsql::JoinDefinition *def = table_ref->join;
-    Result result = visitTableRef(def->left);
-    if (!result.isOk) {
-      return result;
-    }
 
-    result = visitTableRef(def->right);
-    if (!result.isOk) {
-      return result;
-    }
+    CHECK_RESULT(visitTableRef(def->left));
+    CHECK_RESULT(visitTableRef(def->right));
 
     in_join_condition_ = true;
-    result = visitExpression(def->condition);
+    CHECK_RESULT(visitExpression(def->condition));
     in_join_condition_ = false;
-    if (!result.isOk) {
-      return result;
-    }
+
     return Result::ok;
   }
 
   case hsql::kTableCrossProduct:
     for (hsql::TableRef* ref : *table_ref->list) {
-      Result result = visitTableRef(ref);
-      if (!result.isOk) {
-        return result;
-      }
+      CHECK_RESULT(visitTableRef(ref));
     }
     return Result::ok;
   default:
@@ -229,19 +183,38 @@ Result Visitor::visitTableRef(hsql::TableRef* table_ref) {
   }
 }
 
-Result Visitor::visitInsertStatement(hsql::InsertStatement*) {
-  // TODO:
-  return Result::ok;
+Result Visitor::visitInsertStatement(hsql::InsertStatement* stmt) {
+  switch (stmt->type) {
+  case hsql::kInsertValues: {
+    for (hsql::Expr* expr : *stmt->values) {
+      CHECK_RESULT(visitExpression(expr));
+    }
+    return Result::ok;
+  }
+  case hsql::kInsertSelect:
+    return visitSelectStatement(stmt->select);
+  default:
+    assert(false);
+  }
 }
 
-Result Visitor::visitUpdateStatement(hsql::UpdateStatement*) {
-  // TODO:
+Result Visitor::visitUpdateStatement(hsql::UpdateStatement* stmt) {
+  assert(stmt->table->type == hsql::kTableName);
+
+  for (hsql::UpdateClause* update : *stmt->updates) {
+    CHECK_RESULT(visitExpression(update->value));
+  }
+
+  if (stmt->where != nullptr) {
+    CHECK_RESULT(visitExpression(stmt->where));
+  }
+
   return Result::ok;
 }
 
 Result Visitor::visitDeleteStatement(hsql::DeleteStatement*) {
+  return Result::makeError("postgres_tde: unsupported");
   // TODO:
-  return Result::ok;
 }
 
 const std::string& Visitor::getTableNameByAlias(const std::string& alias) {

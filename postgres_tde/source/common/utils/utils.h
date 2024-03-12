@@ -23,6 +23,8 @@ struct Result {
   std::string error;
 };
 
+char* makeOwnedCString(const std::string& str);
+
 } // namespace Utils
 } // namespace Common
 } // namespace Extensions

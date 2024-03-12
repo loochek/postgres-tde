@@ -6,9 +6,9 @@
 #include "source/common/buffer/buffer_impl.h"
 #include "source/common/common/logger.h"
 
-#include "postgres_tde/source/common/sqlutils/sqlutils.h"
 #include "postgres_tde/source/filters/network/postgres_tde/config/dummy_config.h"
 #include "postgres_tde/source/filters/network/postgres_tde/mutators/mutator.h"
+#include "postgres_tde/source/common/sqlutils/ast/dump_visitor.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -47,6 +47,7 @@ public:
 
 protected:
   std::vector<MutatorPtr> mutator_chain_;
+  std::unique_ptr<Envoy::Extensions::Common::SQLUtils::DumpVisitor> dumper_;
 
   DummyConfig config_;
 };
