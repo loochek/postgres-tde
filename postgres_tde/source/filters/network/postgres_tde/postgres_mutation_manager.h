@@ -8,6 +8,7 @@
 
 #include "postgres_tde/source/filters/network/postgres_tde/config/dummy_config.h"
 #include "postgres_tde/source/filters/network/postgres_tde/mutators/mutator.h"
+#include "postgres_tde/source/filters/network/postgres_tde/postgres_protocol.h"
 #include "postgres_tde/source/common/sqlutils/ast/dump_visitor.h"
 
 namespace Envoy {
@@ -20,14 +21,14 @@ class MutationManager {
 public:
   virtual ~MutationManager() = default;
 
-  virtual Result processQuery(std::string&) PURE;
+  virtual Result processQuery(QueryMessage&) PURE;
 
-  virtual void processRowDescription(Buffer::Instance&) PURE;
-  virtual void processDataRow(Buffer::Instance&) PURE;
+  virtual void processRowDescription(RowDescriptionMessage&) PURE;
+  virtual void processDataRow(DataRowMessage &) PURE;
 
-  virtual void processCommandComplete(Buffer::Instance&) PURE;
+  virtual void processCommandComplete(CommandCompleteMessage &) PURE;
   virtual void processEmptyQueryResponse() PURE;
-  virtual void processErrorResponse(Buffer::Instance&) PURE;
+  virtual void processErrorResponse(ErrorResponseMessage&) PURE;
 };
 
 using MutationManagerPtr = std::unique_ptr<MutationManager>;
@@ -36,14 +37,14 @@ class MutationManagerImpl : public MutationManager, Logger::Loggable<Logger::Id:
 public:
   MutationManagerImpl();
 
-  Result processQuery(std::string& query) override;
+  Result processQuery(QueryMessage& message) override;
 
-  void processRowDescription(Buffer::Instance& data) override;
-  void processDataRow(Buffer::Instance& data) override;
+  void processRowDescription(RowDescriptionMessage& message) override;
+  void processDataRow(DataRowMessage& message) override;
 
-  void processCommandComplete(Buffer::Instance& data) override;
+  void processCommandComplete(CommandCompleteMessage& message) override;
   void processEmptyQueryResponse() override;
-  void processErrorResponse(Buffer::Instance& data) override;
+  void processErrorResponse(ErrorResponseMessage& message) override;
 
 protected:
   std::vector<MutatorPtr> mutator_chain_;

@@ -61,7 +61,7 @@ public:
   }
 
   ColumnConfig* getColumnConfig(const std::string& table, const std::string& name) override {
-    if (table == "city_bi_test" && columns_.find(name) != columns_.end()) {
+    if ((table == "city_bi_test" || table == "city_bi_test2") && columns_.find(name) != columns_.end()) {
       return &columns_[name];
     } else {
       return nullptr;
@@ -69,7 +69,7 @@ public:
   }
 
   bool hasTDEEnabled(const std::string& table) override {
-    return table == "city_bi_test";
+    return table == "city_bi_test" || table == "city_bi_test2";
   }
 
 private:

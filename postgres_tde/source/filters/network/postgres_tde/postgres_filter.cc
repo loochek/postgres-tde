@@ -8,6 +8,8 @@
 #include "postgres_tde/source/filters/network/postgres_tde/common.h"
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_decoder.h"
 
+#include "absl/strings/escaping.h"
+
 #include <cstring>
 
 namespace Envoy {
@@ -35,27 +37,28 @@ Network::FilterStatus PostgresFilter::onData(Buffer::Instance& data, bool) {
   ENVOY_CONN_LOG(trace, "postgres_proxy: got {} bytes", read_callbacks_->connection(),
                  data.length());
 
+//  auto kek = data.linearize(data.length());
+//  ENVOY_LOG(error, "orig data: {}", absl::BytesToHexString(absl::string_view(reinterpret_cast<const char*>(kek), data.length())));
   frontend_validation_buffer_.add(data);
-  frontend_mutation_buffer_.add(data);
   data.drain(data.length());
 
-  Decoder::Result result = doDecode(frontend_validation_buffer_, frontend_mutation_buffer_, true);
-  uint32_t mutated_data_size =
-      frontend_mutation_buffer_.length() - frontend_validation_buffer_.length();
-
+  Decoder::Result result = doDecode(frontend_validation_buffer_, true);
+  Buffer::Instance& replacement_data = decoder_->getReplacementData();
   switch (result) {
   case Decoder::Result::NeedMoreData:
   case Decoder::Result::ReadyForNext:
-    if (mutated_data_size > 0) {
+    if (replacement_data.length() > 0) {
       // Pass mutated data to the rest of the filter chain and continue
-      data.move(frontend_mutation_buffer_, mutated_data_size);
+      data.move(replacement_data, replacement_data.length());
+//      auto kek2 = data.linearize(data.length());
+//      ENVOY_LOG(error, "mted data: {}", absl::BytesToHexString(absl::string_view(reinterpret_cast<const char*>(kek2), data.length())));
       read_callbacks_->continueReading();
     }
     return Network::FilterStatus::StopIteration;
 
   case Decoder::Result::Stopped:
     ASSERT(frontend_validation_buffer_.length() == 0);
-    frontend_mutation_buffer_.drain(frontend_mutation_buffer_.length());
+    replacement_data.drain(replacement_data.length());
     return Network::FilterStatus::StopIteration;
   }
 }
@@ -72,27 +75,28 @@ void PostgresFilter::initializeWriteFilterCallbacks(Network::WriteFilterCallback
 
 // Network::WriteFilter
 Network::FilterStatus PostgresFilter::onWrite(Buffer::Instance& data, bool end_stream) {
+//  auto kek = data.linearize(data.length());
+//  ENVOY_LOG(error, "orig data: {}", absl::BytesToHexString(absl::string_view(reinterpret_cast<const char*>(kek), data.length())));
   backend_validation_buffer_.add(data);
-  backend_mutation_buffer_.add(data);
   data.drain(data.length());
 
-  Decoder::Result result = doDecode(backend_validation_buffer_, backend_mutation_buffer_, false);
-  uint32_t mutated_data_size =
-      backend_mutation_buffer_.length() - backend_validation_buffer_.length();
-
+  Decoder::Result result = doDecode(backend_validation_buffer_, false);
+  Buffer::Instance& replacement_data = decoder_->getReplacementData();
   switch (result) {
   case Decoder::Result::NeedMoreData:
   case Decoder::Result::ReadyForNext:
-    if (mutated_data_size > 0) {
+    if (replacement_data.length() > 0) {
       // Pass mutated data to the rest of the filter chain and continue
-      data.move(backend_mutation_buffer_, mutated_data_size);
+      data.move(replacement_data, replacement_data.length());
+//      auto kek2 = data.linearize(data.length());
+//      ENVOY_LOG(error, "mted data: {}", absl::BytesToHexString(absl::string_view(reinterpret_cast<const char*>(kek2), data.length())));
       write_callbacks_->injectWriteDataToFilterChain(data, end_stream);
     }
     return Network::FilterStatus::StopIteration;
 
   case Decoder::Result::Stopped:
-    ASSERT(frontend_validation_buffer_.length() == 0);
-    backend_mutation_buffer_.drain(backend_mutation_buffer_.length());
+    ASSERT(backend_validation_buffer_.length() == 0);
+    replacement_data.drain(replacement_data.length());
     return Network::FilterStatus::StopIteration;
   }
 }
@@ -105,123 +109,9 @@ MutationManagerPtr PostgresFilter::createMutationManager() {
   return std::make_unique<MutationManagerImpl>();
 }
 
-void PostgresFilter::incMessagesBackend() {
-  config_->stats_.messages_.inc();
-  config_->stats_.messages_backend_.inc();
-}
-
-void PostgresFilter::incMessagesFrontend() {
-  config_->stats_.messages_.inc();
-  config_->stats_.messages_frontend_.inc();
-}
-
-void PostgresFilter::incMessagesUnknown() {
-  config_->stats_.messages_.inc();
-  config_->stats_.messages_unknown_.inc();
-}
-
-void PostgresFilter::incSessionsEncrypted() {
-  config_->stats_.sessions_.inc();
-  config_->stats_.sessions_encrypted_.inc();
-}
-
-void PostgresFilter::incSessionsUnencrypted() {
-  config_->stats_.sessions_.inc();
-  config_->stats_.sessions_unencrypted_.inc();
-}
-
-void PostgresFilter::incTransactions() {
-  if (!decoder_->getSession().inTransaction()) {
-    config_->stats_.transactions_.inc();
-  }
-}
-
-void PostgresFilter::incTransactionsCommit() {
-  if (!decoder_->getSession().inTransaction()) {
-    config_->stats_.transactions_commit_.inc();
-  }
-}
-
-void PostgresFilter::incTransactionsRollback() {
-  if (decoder_->getSession().inTransaction()) {
-    config_->stats_.transactions_rollback_.inc();
-  }
-}
-
-void PostgresFilter::incNotices(NoticeType type) {
-  config_->stats_.notices_.inc();
-  switch (type) {
-  case DecoderCallbacks::NoticeType::Warning:
-    config_->stats_.notices_warning_.inc();
-    break;
-  case DecoderCallbacks::NoticeType::Notice:
-    config_->stats_.notices_notice_.inc();
-    break;
-  case DecoderCallbacks::NoticeType::Debug:
-    config_->stats_.notices_debug_.inc();
-    break;
-  case DecoderCallbacks::NoticeType::Info:
-    config_->stats_.notices_info_.inc();
-    break;
-  case DecoderCallbacks::NoticeType::Log:
-    config_->stats_.notices_log_.inc();
-    break;
-  case DecoderCallbacks::NoticeType::Unknown:
-    config_->stats_.notices_unknown_.inc();
-    break;
-  }
-}
-
-void PostgresFilter::incErrors(ErrorType type) {
-  config_->stats_.errors_.inc();
-  switch (type) {
-  case DecoderCallbacks::ErrorType::Error:
-    config_->stats_.errors_error_.inc();
-    break;
-  case DecoderCallbacks::ErrorType::Fatal:
-    config_->stats_.errors_fatal_.inc();
-    break;
-  case DecoderCallbacks::ErrorType::Panic:
-    config_->stats_.errors_panic_.inc();
-    break;
-  case DecoderCallbacks::ErrorType::Unknown:
-    config_->stats_.errors_unknown_.inc();
-    break;
-  }
-}
-
-void PostgresFilter::incStatements(StatementType type) {
-  config_->stats_.statements_.inc();
-
-  switch (type) {
-  case DecoderCallbacks::StatementType::Insert:
-    config_->stats_.statements_insert_.inc();
-    break;
-  case DecoderCallbacks::StatementType::Delete:
-    config_->stats_.statements_delete_.inc();
-    break;
-  case DecoderCallbacks::StatementType::Select:
-    config_->stats_.statements_select_.inc();
-    break;
-  case DecoderCallbacks::StatementType::Update:
-    config_->stats_.statements_update_.inc();
-    break;
-  case DecoderCallbacks::StatementType::Other:
-    config_->stats_.statements_other_.inc();
-    break;
-  case DecoderCallbacks::StatementType::Noop:
-    break;
-  }
-}
-
-bool PostgresFilter::processQuery(Buffer::Instance& replace_message) {
-  std::string query = replace_message.toString();
-  query.pop_back(); // remove null terminator specified by the postgres string type
-
-  Result result = mutation_manager_->processQuery(query);
+bool PostgresFilter::processQuery(QueryMessage& message) {
+  Result result = mutation_manager_->processQuery(message);
   if (result.isOk) {
-    replace_message.drain(replace_message.length());
-    replace_message.add(query.data(), query.length() + 1); // taking null terminator into account
     return true;
   } else {
     Buffer::OwnedImpl injectBuffer;
@@ -232,28 +122,28 @@ bool PostgresFilter::processQuery(Buffer::Instance& replace_message) {
   }
 }
 
-bool PostgresFilter::processParse(Buffer::Instance&) {
+bool PostgresFilter::processParse(ParseMessage&) {
   Buffer::OwnedImpl injectBuffer;
   createErrorResponseMessage("postgres_tde: prepared statements are not supported").write(injectBuffer);
   write_callbacks_->injectWriteDataToFilterChain(injectBuffer, false);
   return false;
 }
 
-void PostgresFilter::processRowDescription(Buffer::Instance& replace_message) {
+void PostgresFilter::processRowDescription(RowDescriptionMessage & replace_message) {
   mutation_manager_->processRowDescription(replace_message);
 }
 
-void PostgresFilter::processDataRow(Buffer::Instance& replace_message) {
+void PostgresFilter::processDataRow(DataRowMessage& replace_message) {
   mutation_manager_->processDataRow(replace_message);
 }
 
-void PostgresFilter::processCommandComplete(Buffer::Instance& replace_message) {
+void PostgresFilter::processCommandComplete(CommandCompleteMessage& replace_message) {
   mutation_manager_->processCommandComplete(replace_message);
 }
 
 void PostgresFilter::processEmptyQueryResponse() { mutation_manager_->processEmptyQueryResponse(); }
 
-void PostgresFilter::processErrorResponse(Buffer::Instance& replace_message) {
+void PostgresFilter::processErrorResponse(ErrorResponseMessage& replace_message) {
   mutation_manager_->processErrorResponse(replace_message);
 }
 
@@ -338,16 +228,12 @@ bool PostgresFilter::encryptUpstream(bool upstream_agreed, Buffer::Instance& dat
   return encrypted;
 }
 
-Decoder::Result PostgresFilter::doDecode(Buffer::Instance& parse_data, Buffer::Instance& orig_data,
+Decoder::Result PostgresFilter::doDecode(Buffer::Instance& parse_data,
                                          bool frontend) {
   // Keep processing data until buffer is empty or decoder says
   // that it cannot process data in the buffer.
-  bool first_invocation = true;
   while (0 < parse_data.length()) {
-    bool is_first_invocation = first_invocation;
-    first_invocation = false;
-
-    switch (decoder_->onData(parse_data, orig_data, frontend, is_first_invocation)) {
+    switch (decoder_->onData(parse_data, frontend)) {
     case Decoder::Result::ReadyForNext:
       continue;
     case Decoder::Result::NeedMoreData:
