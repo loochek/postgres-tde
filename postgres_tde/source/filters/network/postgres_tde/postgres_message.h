@@ -177,6 +177,9 @@ private:
 // value.
 class VarByteN {
 public:
+  VarByteN() = default;
+  explicit VarByteN(std::vector<uint8_t> data) : value_(std::move(data)) {}
+
   /**
    * See above for parameter and return value description.
    */
@@ -184,31 +187,42 @@ public:
   std::string toString() const;
   Message::ValidationResult validate(const Buffer::Instance&, const uint64_t, uint64_t&, uint64_t&);
 
-  int32_t getSize() const { return value_.size() + sizeof(len_); }
+  int32_t getSize() const { return (value_.has_value() ? value_->size() : 0) + sizeof(int32_t); }
 
   void write(Buffer::Instance& to) const {
-    to.writeBEInt(len_);
-    to.add(value_.data(), value_.size());
-  };
+    if (value_.has_value()) {
+      to.writeBEInt<int32_t>(value_->size());
+      to.add(value_->data(), value_->size());
+    } else {
+      to.writeBEInt<int32_t>(-1);
+    }
+  }
 
-  const auto& value() { return value_; }
+  bool is_null() const { return !value_.has_value(); }
+
+  auto& value() {
+    ASSERT(value_.has_value());
+    return *value_;
+  }
 
 private:
-  int32_t len_;
-  std::vector<uint8_t> value_;
+  std::optional<std::vector<uint8_t>> value_;
 };
 
 // Array contains one or more values of the same type.
 template <typename T> class Array {
 public:
+  Array() = default;
+  explicit Array(std::vector<std::unique_ptr<T>> elements) : value_(std::move(elements)) {}
+
   /**
    * See above for parameter and return value description.
    */
   bool read(const Buffer::Instance& data, uint64_t& pos, uint64_t& left) {
-    // Skip reading the size of array. The validator did it.
+    uint16_t size = data.peekBEInt<uint16_t>(pos);
     pos += sizeof(uint16_t);
     left -= sizeof(uint16_t);
-    for (uint16_t i = 0; i < size_; i++) {
+    for (uint16_t i = 0; i < size; i++) {
       value_[i]->read(data, pos, left);
     }
     return true;
@@ -239,13 +253,13 @@ public:
       return Message::ValidationNeedMoreData;
     }
 
-    size_ = data.peekBEInt<uint16_t>(pos);
+    uint16_t size = data.peekBEInt<uint16_t>(pos);
     uint64_t orig_pos = pos;
     uint64_t orig_left = left;
     pos += sizeof(uint16_t);
     left -= sizeof(uint16_t);
-    if (size_ != 0) {
-      for (uint16_t i = 0; i < size_; i++) {
+    if (size != 0) {
+      for (uint16_t i = 0; i < size; i++) {
         auto item = std::make_unique<T>();
         Message::ValidationResult result = item->validate(data, start_offset, pos, left);
         if (Message::ValidationOK != result) {
@@ -265,20 +279,19 @@ public:
     for (auto& elem : value_) {
       size += elem->getSize();
     }
-    return sizeof(size_) + size;
+    return sizeof(uint16_t) + size;
   }
 
   void write(Buffer::Instance& to) const {
-    to.writeBEInt(size_);
+    to.writeBEInt<uint16_t>(value_.size());
     for (const std::unique_ptr<T>& elem : value_) {
       elem->write(to);
     }
   }
 
-  const auto& value() { return value_; }
+  auto& value() { return value_; }
 
 private:
-  uint16_t size_;
   std::vector<std::unique_ptr<T>> value_;
 };
 
@@ -406,7 +419,15 @@ public:
     remaining_.write(to);
   };
 
-  auto& value() { return first_; }
+  template<int Index>
+  constexpr auto& value() {
+    if constexpr (Index == 0) {
+      return first_;
+    }
+    else {
+      return remaining_.template value<Index - 1>();
+    }
+  }
 };
 
 // Terminal template definition for variadic Sequence template.
@@ -430,6 +451,7 @@ public:
   explicit MessageImpl(Types... fields) : Sequence<Types...>(std::move(fields)...) {}
 
   ~MessageImpl() override = default;
+
   bool read(const Buffer::Instance& data, const uint64_t length) override {
     // Do not call read unless validation was successful.
     ASSERT(validation_result_ == ValidationOK);
@@ -437,6 +459,7 @@ public:
     uint64_t left = length;
     return Sequence<Types...>::read(data, pos, left);
   }
+
   Message::ValidationResult validate(const Buffer::Instance& data, const uint64_t start_pos,
                                      const uint64_t length) override {
     uint64_t pos = start_pos;
@@ -469,6 +492,7 @@ public:
   ~MessageImpl() override = default;
 
   bool read(const Buffer::Instance&, const uint64_t) override { return true; }
+
   Message::ValidationResult validate(const Buffer::Instance&, const uint64_t,
                                      const uint64_t) override {
     return ValidationOK;
@@ -491,8 +515,8 @@ public:
 
 template <char Identifier, typename... Types> class TypedMessage : public MessageImpl<Types...> {
 public:
-  TypedMessage() = default;
-  explicit TypedMessage(Types... fields) : MessageImpl<Types...>(std::move(fields)...) {}
+  // Inherit constructor
+  using MessageImpl<Types...>::MessageImpl;
 
   bool isWriteable() const override { return true; }
   void write(Buffer::Instance& to) const override { MessageImpl<Types...>::write(to, Identifier); }
@@ -501,7 +525,8 @@ public:
 template <char Identifier>
 class TypedMessage<Identifier> : public MessageImpl<> {
 public:
-  TypedMessage() = default;
+  // Inherit constructor
+  using MessageImpl<>::MessageImpl;
 
   bool isWriteable() const override { return true; }
   void write(Buffer::Instance& to) const override { MessageImpl<>::write(to, Identifier); }

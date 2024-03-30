@@ -362,13 +362,8 @@ config_setting(
 )
 
 config_setting(
-    name = "disable_envoy_mobile_request_compression",
-    values = {"define": "envoy_mobile_request_compression=disabled"},
-)
-
-config_setting(
-    name = "disable_envoy_mobile_stats_reporting",
-    values = {"define": "envoy_mobile_stats_reporting=disabled"},
+    name = "disable_envoy_mobile_xds",
+    values = {"define": "envoy_mobile_xds=disabled"},
 )
 
 config_setting(
@@ -395,7 +390,7 @@ config_setting(
 
 config_setting(
     name = "disable_http_datagrams",
-    values = {"define": "enable_http_datagrams=disabled"},
+    values = {"define": "envoy_enable_http_datagrams=disabled"},
 )
 
 config_setting(
@@ -486,18 +481,20 @@ config_setting(
     values = {"define": "boringssl=disabled"},
 )
 
+selects.config_setting_group(
+    name = "boringssl_fips_x86",
+    match_all = [
+        ":boringssl_fips",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
 config_setting(
     name = "zlib_ng",
     constraint_values = [
         "@platforms//os:linux",
     ],
     values = {"define": "zlib=ng"},
-)
-
-# TODO: consider converting WAVM VM support to an extension (https://github.com/envoyproxy/envoy/issues/12574)
-config_setting(
-    name = "wasm_wavm",
-    values = {"define": "wasm=wavm"},
 )
 
 config_setting(
@@ -705,6 +702,15 @@ selects.config_setting_group(
 )
 
 selects.config_setting_group(
+    name = "darwin_any",
+    match_any = [
+        ":darwin",
+        ":darwin_arm64",
+        ":darwin_x86_64",
+    ],
+)
+
+selects.config_setting_group(
     name = "apple_dbg",
     match_all = [
         ":apple",
@@ -896,7 +902,7 @@ cc_library(
 updater(
     name = "update",
     data = ["//tools/dependency:check"],
-    dependencies = ":repository_locations",
+    dependencies = "//tools/dependency:filtered-dependencies",
     post_script = ":version_update_post.sh",
     pydict = True,
     tags = ["skip_on_windows"],

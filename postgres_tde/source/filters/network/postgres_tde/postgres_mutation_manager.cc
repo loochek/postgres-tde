@@ -1,6 +1,6 @@
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_mutation_manager.h"
 #include "postgres_tde/source/filters/network/postgres_tde/mutators/blind_index.h"
-//#include "postgres_tde/source/filters/network/postgres_tde/mutators/encryption.h"
+#include "postgres_tde/source/filters/network/postgres_tde/mutators/encryption.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -9,16 +9,17 @@ namespace PostgresTDE {
 
 MutationManagerImpl::MutationManagerImpl() {
   mutator_chain_.push_back(std::make_unique<BlindIndexMutator>(&config_));
-//  mutator_chain_.push_back(std::make_unique<EncryptionMutator>(&config_));
+  mutator_chain_.push_back(std::make_unique<EncryptionMutator>(&config_));
   dumper_ = std::make_unique<Common::SQLUtils::DumpVisitor>();
 }
 
-Result
-PostgresTDE::MutationManagerImpl::processQuery(QueryMessage& query) {
-  ENVOY_LOG(error, "MutationManagerImpl::processQuery - got {}", query.toString());
+Result PostgresTDE::MutationManagerImpl::processQuery(QueryMessage& message) {
+  ENVOY_LOG(error, "MutationManagerImpl::processQuery - got {}", message.toString());
+
+  std::string& query_str = message.queryString();
 
   hsql::SQLParserResult parsed_query;
-  hsql::SQLParser::parse(query.value().value(), &parsed_query);
+  hsql::SQLParser::parse(query_str, &parsed_query);
   if (!parsed_query.isValid()) {
     // Pass incorrect queries to the backend in order to get a detailed error message
     return Result::ok;
@@ -36,21 +37,25 @@ PostgresTDE::MutationManagerImpl::processQuery(QueryMessage& query) {
     return result;
   }
 
-  query.value().value() = dumper_->getResult();
-  ENVOY_LOG(error, "mutated query: {}", query.toString());
+  query_str = dumper_->getResult();
+  ENVOY_LOG(error, "mutated query message: {}", message.toString());
   return Result::ok;
 }
 
-void MutationManagerImpl::processRowDescription(RowDescriptionMessage& data) {
-  ENVOY_LOG(error, "MutationManagerImpl::processRowDescription - got {}", data.toString());
+void MutationManagerImpl::processRowDescription(RowDescriptionMessage& message) {
+  ENVOY_LOG(error, "MutationManagerImpl::processRowDescription - got {}", message.toString());
 
-  // TODO: save some information about result columns
+  for (auto it = mutator_chain_.rbegin(); it != mutator_chain_.rend(); it++) {
+    (*it)->mutateRowDescription(message);
+  }
 }
 
-void MutationManagerImpl::processDataRow(DataRowMessage&) {
+void MutationManagerImpl::processDataRow(DataRowMessage& message) {
   ENVOY_LOG(error, "MutationManagerImpl::processDataRow");
 
-  // TODO: do something - save table layout to be accessible by mutators
+  for (auto it = mutator_chain_.rbegin(); it != mutator_chain_.rend(); it++) {
+    (*it)->mutateDataRow(message);
+  }
 }
 
 void MutationManagerImpl::processCommandComplete(CommandCompleteMessage& data) {

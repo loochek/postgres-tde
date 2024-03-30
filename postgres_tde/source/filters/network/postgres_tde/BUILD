@@ -19,6 +19,7 @@ envoy_cc_library(
         "postgres_protocol.cc",
         "postgres_mutation_manager.cc",
         "mutators/blind_index.cc",
+        "mutators/encryption.cc",
     ],
     hdrs = [
         "postgres_decoder.h",
@@ -32,6 +33,7 @@ envoy_cc_library(
         "config/dummy_config.h",
         "mutators/mutator.h",
         "mutators/blind_index.h",
+        "mutators/encryption.h",
         "common.h",
     ],
     repository = "@envoy",
@@ -39,6 +41,7 @@ envoy_cc_library(
         "//postgres_tde/api/filters/network/postgres_tde:pkg_cc_proto",
         "//postgres_tde/source/common/sqlutils:sqlutils_lib_2",
         "//postgres_tde/source/common/utils:utils_lib",
+        "//postgres_tde/source/common/crypto:utility_ext_lib",
         "@envoy//envoy/network:filter_interface",
         "@envoy//envoy/server:filter_config_interface",
         "@envoy//envoy/stats:stats_interface",

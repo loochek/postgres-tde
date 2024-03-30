@@ -19,6 +19,15 @@ namespace SQLUtils {
 
 using Common::Utils::Result;
 
+class ColumnRef: public std::pair<std::string, std::string> {
+public:
+  // Inherit constructors
+  using pair::pair;
+
+  auto& table() const { return first; }
+  auto& column() const { return second; }
+};
+
 // Helper class that provides base traversal routines for SQL query's AST
 class Visitor : public Logger::Loggable<Logger::Id::filter> {
 public:
@@ -40,14 +49,18 @@ protected:
   virtual Result visitUpdateStatement(hsql::UpdateStatement* stmt);
   virtual Result visitDeleteStatement(hsql::DeleteStatement* stmt);
 
-  const std::string& getTableNameByAlias(const std::string& alias);
+  const std::string& getTableNameByAlias(const std::string& alias) const;
+  const ColumnRef* getColumnByAlias(const std::string& alias) const;
 
 protected:
   bool in_select_body_{false};
   bool in_join_condition_{false};
   bool in_group_by_{false};
 
-  std::unordered_map<std::string, std::string> alias2table_;
+  std::unordered_map<std::string, std::string> table_aliases_;
+  std::unordered_map<std::string, ColumnRef> column_aliases_;
+
+  std::vector<std::string> from_tables_;
 };
 
 using VisitorPtr = std::unique_ptr<Visitor>;

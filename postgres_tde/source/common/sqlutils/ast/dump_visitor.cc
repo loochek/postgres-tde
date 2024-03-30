@@ -28,6 +28,9 @@ Result DumpVisitor::visitExpression(hsql::Expr* expr) {
       query_str_ << expr->table << ".";
     }
     query_str_ << expr->name;
+    if (expr->alias != nullptr) {
+      query_str_ << " AS " << expr->alias;
+    }
     return Result::ok;
   case hsql::kExprLiteralFloat:
     query_str_ << expr->fval;
@@ -171,6 +174,16 @@ Result DumpVisitor::visitSelectStatement(hsql::SelectStatement* stmt) {
     }
   }
 
+  if (stmt->limit != nullptr) {
+    if (stmt->limit->limit != hsql::kNoLimit) {
+      query_str_ << " LIMIT " << stmt->limit->limit;
+    }
+
+    if (stmt->limit->offset != hsql::kNoOffset) {
+      query_str_ << " OFFSET " << stmt->limit->offset;
+    }
+  }
+
   return Result::ok;
 }
 
@@ -190,13 +203,9 @@ Result DumpVisitor::visitTableRef(hsql::TableRef* table_ref) {
   }
   case hsql::kTableJoin: {
     hsql::JoinDefinition* def = table_ref->join;
-    query_str_ << "(";
     CHECK_RESULT(visitTableRef(def->left));
-    query_str_ << ") "
-               << "JOIN"
-               << " (";
+    query_str_ << " JOIN ";
     CHECK_RESULT(visitTableRef(def->right));
-    query_str_ << ")";
 
     if (def->condition != nullptr) {
       query_str_ << " ON (";

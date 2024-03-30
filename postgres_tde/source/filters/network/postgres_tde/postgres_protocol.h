@@ -7,11 +7,55 @@ namespace Extensions {
 namespace NetworkFilters {
 namespace PostgresTDE {
 
-using QueryMessage = TypedMessage<'Q', String>;
+class QueryMessage: public TypedMessage<'Q', String> {
+public:
+  // Inherit constructors
+  using TypedMessage::TypedMessage;
+
+  auto& queryString() {
+    return value<0>().value();
+  }
+};
+
 using ParseMessage = TypedMessage<'P', String, String, Array<Int32>>;
-using RowDescriptionMessage =
-    TypedMessage<'T', Array<Sequence<String, Int32, Int16, Int32, Int16, Int32, Int16>>>;
-using DataRowMessage = TypedMessage<'D', Array<VarByteN>>;
+
+class ColumnDescription : public Sequence<String, Int32, Int16, Int32, Int16, Int32, Int16> {
+public:
+  // Inherit constructors
+  using Sequence::Sequence;
+
+  auto& name() {
+    return value<0>().value();
+  }
+
+  auto& dataType() {
+    return value<3>().value();
+  }
+
+  auto& formatCode() {
+    return value<6>().value();
+  }
+};
+
+class RowDescriptionMessage : public TypedMessage<'T', Array<ColumnDescription>> {
+public:
+  // Inherit constructors
+  using TypedMessage::TypedMessage;
+
+  auto& column_descriptions() {
+    return value<0>().value();
+  }
+};
+
+class DataRowMessage: public TypedMessage<'D', Array<VarByteN>> {
+public:
+  // Inherit constructors
+  using TypedMessage::TypedMessage;
+
+  auto& columns() {
+    return value<0>().value();
+  }
+};
 
 using CommandCompleteMessage = TypedMessage<'C', String>;
 using EmptyQueryResponseMessage = TypedMessage<'I'>;

@@ -3,6 +3,7 @@
 #include "include/sqlparser/SQLParser.h"
 #include "envoy/common/pure.h"
 #include "postgres_tde/source/common/utils/utils.h"
+#include "postgres_tde/source/filters/network/postgres_tde/postgres_protocol.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -18,7 +19,8 @@ public:
   virtual ~Mutator() = default;
 
   virtual Result mutateQuery(hsql::SQLParserResult&) PURE;
-  virtual void mutateResult() PURE;
+  virtual void mutateRowDescription(RowDescriptionMessage&) {}
+  virtual void mutateDataRow(DataRowMessage&) {}
 
   MutationManager* getMutationManager() {
     return mutation_manager_;

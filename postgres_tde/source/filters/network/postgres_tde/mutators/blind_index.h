@@ -17,7 +17,6 @@ public:
   BlindIndexMutator(const BlindIndexMutator&) = delete;
 
   Result mutateQuery(hsql::SQLParserResult& query) override;
-  void mutateResult() override;
 
 protected:
   Result visitExpression(hsql::Expr* expr) override;
