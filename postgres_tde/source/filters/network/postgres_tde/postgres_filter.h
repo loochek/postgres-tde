@@ -108,31 +108,19 @@ public:
   // Network::WriteFilter
   Network::FilterStatus onWrite(Buffer::Instance& data, bool end_stream) override;
 
-  // PostgresProxy::DecoderCallback
-  void incErrors(ErrorType) override;
-  void incMessagesBackend() override;
-  void incMessagesFrontend() override;
-  void incMessagesUnknown() override;
-  void incNotices(NoticeType) override;
-  void incSessionsEncrypted() override;
-  void incSessionsUnencrypted() override;
-  void incStatements(StatementType) override;
-  void incTransactions() override;
-  void incTransactionsCommit() override;
-  void incTransactionsRollback() override;
-  bool processQuery(Buffer::Instance&) override;
-  bool processParse(Buffer::Instance&) override;
-  void processRowDescription(Buffer::Instance&) override;
-  void processDataRow(Buffer::Instance&) override;
-  void processCommandComplete(Buffer::Instance&) override;
-  void processEmptyQueryResponse() override;
-  void processErrorResponse(Buffer::Instance&) override;
+  void processQuery(std::unique_ptr<QueryMessage>&) override;
+  void processParse(std::unique_ptr<ParseMessage>&) override;
+  void processRowDescription(std::unique_ptr<RowDescriptionMessage>&) override;
+  void processDataRow(std::unique_ptr<DataRowMessage>&) override;
+  void processCommandComplete(std::unique_ptr<CommandCompleteMessage>&) override;
+  void processEmptyQueryResponse(std::unique_ptr<EmptyQueryResponseMessage>&) override;
+  void processErrorResponse(std::unique_ptr<ErrorResponseMessage>&) override;
   bool onSSLRequest() override;
   bool shouldEncryptUpstream() const override;
   void sendUpstream(Buffer::Instance&) override;
   bool encryptUpstream(bool, Buffer::Instance&) override;
 
-  Decoder::Result doDecode(Buffer::Instance& data, Buffer::Instance& orig_data, bool);
+  Decoder::Result doDecode(Buffer::Instance& data, bool);
   DecoderPtr createDecoder(DecoderCallbacks* callbacks);
   MutationManagerPtr createMutationManager();
   void setDecoder(std::unique_ptr<Decoder> decoder) { decoder_ = std::move(decoder); }
@@ -151,10 +139,7 @@ private:
   PostgresFilterConfigSharedPtr config_;
 
   Buffer::OwnedImpl frontend_validation_buffer_;
-  Buffer::OwnedImpl frontend_mutation_buffer_;
-
   Buffer::OwnedImpl backend_validation_buffer_;
-  Buffer::OwnedImpl backend_mutation_buffer_;
 
   std::unique_ptr<Decoder> decoder_;
   std::unique_ptr<MutationManager> mutation_manager_;

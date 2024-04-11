@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "absl/strings/str_split.h"
+#include "absl/cleanup/cleanup.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -13,13 +14,16 @@ namespace PostgresTDE {
   []() -> std::unique_ptr<Message> { return createMsgBodyReader<__VA_ARGS__>(); }
 #define NO_BODY BODY_FORMAT()
 
+#define TYPED_BODY_FORMAT(TYPE)                                                                    \
+  []() -> std::unique_ptr<Message> { return std::make_unique<TYPE>(); }
+
 constexpr absl::string_view FRONTEND = "Frontend";
 constexpr absl::string_view BACKEND = "Backend";
 
 void DecoderImpl::initialize() {
   // Special handler for first message of the transaction.
-  first_ =
-      MessageProcessor{"Startup", BODY_FORMAT(Int32, Repeated<String>), {&DecoderImpl::onStartup}};
+  startup_msg_processor_ =
+      MessageProcessor{"Startup", BODY_FORMAT(Int32, Repeated<String>), {}};
 
   // Frontend messages.
   FE_messages_.direction_ = FRONTEND;
@@ -44,15 +48,15 @@ void DecoderImpl::initialize() {
                        BODY_FORMAT(Int32, ByteN),
                        {}};
   FE_known_msgs['P'] =
-      MessageProcessor{"Parse", BODY_FORMAT(String, String, Array<Int32>), {&DecoderImpl::onParse}};
-  FE_known_msgs['Q'] = MessageProcessor{"Query", BODY_FORMAT(String), {&DecoderImpl::onQuery}};
+      MessageProcessor{"Parse", TYPED_BODY_FORMAT(ParseMessage), {&DecoderImpl::onParse}};
+  FE_known_msgs['Q'] = MessageProcessor{"Query", TYPED_BODY_FORMAT(QueryMessage), {&DecoderImpl::onQuery}};
   FE_known_msgs['S'] = MessageProcessor{"Sync", NO_BODY, {}};
   FE_known_msgs['X'] =
-      MessageProcessor{"Terminate", NO_BODY, {&DecoderImpl::decodeFrontendTerminate}};
+      MessageProcessor{"Terminate", NO_BODY, {}};
 
   // Handler for unknown Frontend messages.
   FE_messages_.unknown_ =
-      MessageProcessor{"Other", BODY_FORMAT(ByteN), {[](DecoderImpl* decoder) -> void {decoder->incMessagesUnknown();}}};
+      MessageProcessor{"Other", BODY_FORMAT(ByteN), {}};
 
   // Backend messages.
   BE_messages_.direction_ = BACKEND;
@@ -62,14 +66,14 @@ void DecoderImpl::initialize() {
 
   // Handler for known Backend messages.
   BE_known_msgs['R'] =
-      MessageProcessor{"Authentication", BODY_FORMAT(ByteN), {&DecoderImpl::decodeAuthentication}};
+      MessageProcessor{"Authentication", BODY_FORMAT(ByteN), {}};
   BE_known_msgs['K'] = MessageProcessor{"BackendKeyData", BODY_FORMAT(Int32, Int32), {}};
   BE_known_msgs['2'] = MessageProcessor{"BindComplete", NO_BODY, {}};
   BE_known_msgs['3'] = MessageProcessor{"CloseComplete", NO_BODY, {}};
   BE_known_msgs['C'] = MessageProcessor{
       "CommandComplete",
-      BODY_FORMAT(String),
-      {&DecoderImpl::decodeBackendStatements, &DecoderImpl::onCommandComplete}
+      TYPED_BODY_FORMAT(CommandCompleteMessage),
+      {&DecoderImpl::onCommandComplete},
   };
   BE_known_msgs['d'] = MessageProcessor{"CopyData", BODY_FORMAT(ByteN), {}};
   BE_known_msgs['c'] = MessageProcessor{"CopyDone", NO_BODY, {}};
@@ -78,126 +82,46 @@ void DecoderImpl::initialize() {
   BE_known_msgs['W'] = MessageProcessor{"CopyBothResponse", BODY_FORMAT(Int8, Array<Int16>), {}};
   BE_known_msgs['D'] = MessageProcessor{
       "DataRow",
-      BODY_FORMAT(Array<VarByteN>),
+      TYPED_BODY_FORMAT(DataRowMessage),
       {&DecoderImpl::onDataRow},
   };
-  BE_known_msgs['I'] = MessageProcessor{"EmptyQueryResponse", NO_BODY, {&DecoderImpl::onEmptyQueryResponse}};
+  BE_known_msgs['I'] = MessageProcessor{"EmptyQueryResponse", TYPED_BODY_FORMAT(EmptyQueryResponseMessage), {&DecoderImpl::onEmptyQueryResponse}};
   BE_known_msgs['E'] = MessageProcessor{
       "ErrorResponse",
-      BODY_FORMAT(Byte1, String),
-      {&DecoderImpl::decodeBackendErrorResponse, &DecoderImpl::onErrorResponse},
+      TYPED_BODY_FORMAT(ErrorResponseMessage),
+      {&DecoderImpl::onErrorResponse},
   };
   BE_known_msgs['V'] = MessageProcessor{"FunctionCallResponse", BODY_FORMAT(VarByteN), {}};
   BE_known_msgs['v'] = MessageProcessor{"NegotiateProtocolVersion", BODY_FORMAT(ByteN), {}};
   BE_known_msgs['n'] = MessageProcessor{"NoData", NO_BODY, {}};
   BE_known_msgs['N'] = MessageProcessor{
-      "NoticeResponse", BODY_FORMAT(ByteN), {&DecoderImpl::decodeBackendNoticeResponse}};
+      "NoticeResponse", BODY_FORMAT(ByteN), {}};
   BE_known_msgs['A'] =
       MessageProcessor{"NotificationResponse", BODY_FORMAT(Int32, String, String), {}};
   BE_known_msgs['t'] = MessageProcessor{"ParameterDescription", BODY_FORMAT(Array<Int32>), {}};
   BE_known_msgs['S'] = MessageProcessor{"ParameterStatus", BODY_FORMAT(String, String), {}};
   BE_known_msgs['1'] = MessageProcessor{"ParseComplete", NO_BODY, {}};
   BE_known_msgs['s'] = MessageProcessor{"PortalSuspend", NO_BODY, {}};
-  BE_known_msgs['Z'] = MessageProcessor{"ReadyForQuery", BODY_FORMAT(Byte1), {}};
+  BE_known_msgs['Z'] = MessageProcessor{"ReadyForQuery", TYPED_BODY_FORMAT(ReadyForQueryMessage), {}};
   BE_known_msgs['T'] = MessageProcessor{
       "RowDescription",
-      BODY_FORMAT(Array<Sequence<String, Int32, Int16, Int32, Int16, Int32, Int16>>),
+      TYPED_BODY_FORMAT(RowDescriptionMessage),
       {&DecoderImpl::onRowDescription}
   };
 
   // Handler for unknown Backend messages.
   BE_messages_.unknown_ =
-      MessageProcessor{"Other", BODY_FORMAT(ByteN), {[](DecoderImpl* decoder) -> void {decoder->incMessagesUnknown();}}};
-
-  // Setup hash map for handling backend statements.
-  BE_statements_["BEGIN"] = [this](DecoderImpl*) -> void {
-    callbacks_->incStatements(DecoderCallbacks::StatementType::Other);
-    callbacks_->incTransactions();
-    session_.setInTransaction(true);
-  };
-  BE_statements_["ROLLBACK"] = [this](DecoderImpl*) -> void {
-    callbacks_->incStatements(DecoderCallbacks::StatementType::Other);
-    callbacks_->incTransactionsRollback();
-    session_.setInTransaction(false);
-  };
-  BE_statements_["START"] = [this](DecoderImpl*) -> void {
-    callbacks_->incStatements(DecoderCallbacks::StatementType::Other);
-    callbacks_->incTransactions();
-    session_.setInTransaction(true);
-  };
-  BE_statements_["COMMIT"] = [this](DecoderImpl*) -> void {
-    callbacks_->incStatements(DecoderCallbacks::StatementType::Other);
-    session_.setInTransaction(false);
-    callbacks_->incTransactionsCommit();
-  };
-  BE_statements_["SELECT"] = [this](DecoderImpl*) -> void {
-    callbacks_->incStatements(DecoderCallbacks::StatementType::Select);
-    callbacks_->incTransactions();
-    callbacks_->incTransactionsCommit();
-  };
-  BE_statements_["INSERT"] = [this](DecoderImpl*) -> void {
-    callbacks_->incStatements(DecoderCallbacks::StatementType::Insert);
-    callbacks_->incTransactions();
-    callbacks_->incTransactionsCommit();
-  };
-  BE_statements_["UPDATE"] = [this](DecoderImpl*) -> void {
-    callbacks_->incStatements(DecoderCallbacks::StatementType::Update);
-    callbacks_->incTransactions();
-    callbacks_->incTransactionsCommit();
-  };
-  BE_statements_["DELETE"] = [this](DecoderImpl*) -> void {
-    callbacks_->incStatements(DecoderCallbacks::StatementType::Delete);
-    callbacks_->incTransactions();
-    callbacks_->incTransactionsCommit();
-  };
-
-  // Setup hash map for handling backend ErrorResponse messages.
-  BE_errors_.keywords_["ERROR"] = [this](DecoderImpl*) -> void {
-    callbacks_->incErrors(DecoderCallbacks::ErrorType::Error);
-  };
-  BE_errors_.keywords_["FATAL"] = [this](DecoderImpl*) -> void {
-    callbacks_->incErrors(DecoderCallbacks::ErrorType::Fatal);
-  };
-  BE_errors_.keywords_["PANIC"] = [this](DecoderImpl*) -> void {
-    callbacks_->incErrors(DecoderCallbacks::ErrorType::Panic);
-  };
-  // Setup handler which is called when decoder cannot decode the message and treats it as Unknown
-  // Error message.
-  BE_errors_.unknown_ = [this](DecoderImpl*) -> void {
-    callbacks_->incErrors(DecoderCallbacks::ErrorType::Unknown);
-  };
-
-  // Setup hash map for handling backend NoticeResponse messages.
-  BE_notices_.keywords_["WARNING"] = [this](DecoderImpl*) -> void {
-    callbacks_->incNotices(DecoderCallbacks::NoticeType::Warning);
-  };
-  BE_notices_.keywords_["NOTICE"] = [this](DecoderImpl*) -> void {
-    callbacks_->incNotices(DecoderCallbacks::NoticeType::Notice);
-  };
-  BE_notices_.keywords_["DEBUG"] = [this](DecoderImpl*) -> void {
-    callbacks_->incNotices(DecoderCallbacks::NoticeType::Debug);
-  };
-  BE_notices_.keywords_["INFO"] = [this](DecoderImpl*) -> void {
-    callbacks_->incNotices(DecoderCallbacks::NoticeType::Info);
-  };
-  BE_notices_.keywords_["LOG"] = [this](DecoderImpl*) -> void {
-    callbacks_->incNotices(DecoderCallbacks::NoticeType::Log);
-  };
-  // Setup handler which is called when decoder cannot decode the message and treats it as Unknown
-  // Notice message.
-  BE_notices_.unknown_ = [this](DecoderImpl*) -> void {
-    callbacks_->incNotices(DecoderCallbacks::NoticeType::Unknown);
-  };
+      MessageProcessor{"Other", BODY_FORMAT(ByteN), {}};
 }
 
 /* Main handler for incoming messages. Messages are dispatched based on the
    current decoder's state.
 */
-Decoder::Result DecoderImpl::onData(Buffer::Instance& parse_data, Buffer::Instance& orig_data, bool frontend, bool first_msg) {
-  if (first_msg) {
-    orig_data_ = &orig_data;
-    curr_msg_pos_in_orig_data_ = 0;
-  }
+Decoder::Result DecoderImpl::onData(Buffer::Instance& parse_data, bool frontend) {
+//  ENVOY_LOG(error, "onData ent: {} bytes {}", parse_data.length(), parse_data.toString());
+//  absl::Cleanup cleanup = [&]() {
+//    ENVOY_LOG(error, "onData ext: {} bytes {}", parse_data.length(), parse_data.toString());
+//  };
 
   switch (state_) {
   case State::InitState:
@@ -212,6 +136,11 @@ Decoder::Result DecoderImpl::onData(Buffer::Instance& parse_data, Buffer::Instan
   default:
     PANIC("not implemented");
   }
+}
+
+void DecoderImpl::emitBackendMessage(MessagePtr message) {
+  ASSERT(message->isWriteable());
+  message->write(backend_replacement_data_);
 }
 
 /* Handler for messages when decoder is in Init State. There are very few message types which
@@ -232,18 +161,19 @@ Decoder::Result DecoderImpl::onDataInit(Buffer::Instance& data, bool) {
   }
 
   // Validate the message before processing.
-  const MsgBodyReader& f = std::get<1>(first_);
-  const auto msgParser = f();
+  const MsgBodyReader& message_factory = std::get<1>(startup_msg_processor_);
+  replacement_message_ = message_factory();
   // Run the validation.
-  message_len_ = data.peekBEInt<uint32_t>(0);
-  if (message_len_ > MAX_STARTUP_PACKET_LENGTH) {
+  uint32_t message_len = data.peekBEInt<uint32_t>(0);
+  if (message_len > MAX_STARTUP_PACKET_LENGTH) {
     // Message does not conform to the expected format. Move to out-of-sync state.
     data.drain(data.length());
     state_ = State::OutOfSyncState;
     return Decoder::Result::ReadyForNext;
   }
 
-  Message::ValidationResult validationResult = msgParser->validate(data, 4, message_len_ - 4);
+  Message::ValidationResult validationResult =
+      replacement_message_->validate(data, 4, message_len - 4);
 
   if (validationResult == Message::ValidationNeedMoreData) {
     return Decoder::Result::NeedMoreData;
@@ -273,11 +203,8 @@ Decoder::Result DecoderImpl::onDataInit(Buffer::Instance& data, bool) {
       encrypted_ = callbacks_->onSSLRequest();
     }
 
-    // Count it as recognized frontend message.
-    callbacks_->incMessagesFrontend();
     if (encrypted_) {
       ENVOY_LOG(trace, "postgres_proxy: detected encrypted traffic.");
-      incSessionsEncrypted();
       state_ = State::EncryptedState;
     } else {
       result = Decoder::Result::Stopped;
@@ -302,44 +229,67 @@ Decoder::Result DecoderImpl::onDataInit(Buffer::Instance& data, bool) {
       state_ = State::InSyncState;
     }
   }
+
+  // Drain message length
   data.drain(4);
 
-  processMessageBody(data, FRONTEND, message_len_ - 4, first_, msgParser);
-//  data.drain(message_len_); // TODO: ???
+  Buffer::OwnedImpl message_data;
+  message_data.move(data, message_len - 4);
 
-  curr_msg_pos_in_orig_data_ += message_len_;
+  processMessageBody(message_data, true, startup_msg_processor_);
+
+  ENVOY_LOG(trace, "postgres_proxy: {} bytes remaining in buffer", data.length());
   return result;
 }
 
 /*
   Method invokes actions associated with message type and generate debug logs.
 */
-void DecoderImpl::processMessageBody(Buffer::Instance& data, absl::string_view direction,
-                                     uint32_t length, MessageProcessor& msg,
-                                     const std::unique_ptr<Message>& parser) {
-  uint32_t bytes_to_read = length;
+void DecoderImpl::processMessageBody(Buffer::Instance& message_data, bool frontend,
+                                     MessageProcessor& processor) {
+  const absl::string_view& direction = frontend ? FRONTEND : BACKEND;
 
-  std::vector<MsgAction>& actions = std::get<2>(msg);
+  replacement_message_->read(message_data, message_data.length());
+
+  ENVOY_LOG(debug, "before processing:");
+  ENVOY_LOG(debug, "({}) command = {} ({})", direction, command_, std::get<0>(processor));
+  ENVOY_LOG(debug, "({}) length = {}", direction, message_data.length());
+  ENVOY_LOG(debug, "({}) message = {}", direction, replacement_message_->toString());
+
+  std::vector<MsgAction>& actions = std::get<2>(processor);
   if (!actions.empty()) {
-    // Linearize the message for processing.
-    message_.assign(std::string(static_cast<char*>(data.linearize(bytes_to_read)), bytes_to_read));
-
     // Invoke actions associated with the type of received message.
     for (const auto& action : actions) {
       action(this);
     }
-
-    // Drop the linearized message.
-    message_.erase();
   }
 
-  ENVOY_LOG(debug, "({}) command = {} ({})", direction, command_, std::get<0>(msg));
-  ENVOY_LOG(debug, "({}) length = {}", direction, message_len_);
-  ENVOY_LOG(debug, "({}) message = {}", direction, genDebugMessage(parser, data, bytes_to_read));
+  if (!replacement_message_) {
+    // Message should not be written back (as it has been omitted or handled in the other way)
+    return;
+  }
 
-  ENVOY_LOG(trace, "postgres_proxy: {} bytes remaining in buffer", data.length());
+  Buffer::Instance& replacement_data = frontend ? frontend_replacement_data_ : backend_replacement_data_;
 
-  data.drain(length);
+//  uint64_t replace_data_old_length = replacement_data.length();
+  if (replacement_message_->isWriteable()) {
+    // Write actual (possibly mutated) message
+    replacement_message_->write(replacement_data);
+  } else {
+    // Write old message data
+    if (command_ != '-') {
+      replacement_data.writeByte(command_);
+    }
+    replacement_data.writeBEInt<uint32_t>(message_data.length() + 4);
+    replacement_data.move(message_data);
+  }
+
+//  TODO: some logs
+//  ENVOY_LOG(debug, "after processing:");
+//  ENVOY_LOG(debug, "({}) command = {} ({})", direction, command_, std::get<0>(processor));
+//  ENVOY_LOG(debug, "({}) length = {}", direction,
+//            replacement_data.length() - replace_data_old_length - 1);
+//  ENVOY_LOG(debug, "({}) message = {}", direction, replacement_message_->toString());
 }
 
 /*
@@ -364,30 +314,30 @@ Decoder::Result DecoderImpl::onDataInSync(Buffer::Instance& data, bool frontend)
   // The 1 byte message type and message length should be in the buffer
   // Find the message processor and validate the message syntax.
 
-  MsgGroup& msg_processor = std::ref(frontend ? FE_messages_ : BE_messages_);
-  frontend ? callbacks_->incMessagesFrontend() : callbacks_->incMessagesBackend();
+  MsgGroup& msg_processor_group = std::ref(frontend ? FE_messages_ : BE_messages_);
 
   // Set processing to the handler of unknown messages.
   // If message is found, the processing will be updated.
-  std::reference_wrapper<MessageProcessor> msg = msg_processor.unknown_;
+  std::reference_wrapper<MessageProcessor> msg_processor = msg_processor_group.unknown_;
 
-  auto it = msg_processor.messages_.find(command_);
-  if (it != msg_processor.messages_.end()) {
-    msg = std::ref((*it).second);
+  auto it = msg_processor_group.messages_.find(command_);
+  if (it != msg_processor_group.messages_.end()) {
+    msg_processor = std::ref((*it).second);
   }
 
   // Validate the message before processing.
-  const MsgBodyReader& f = std::get<1>(msg.get());
-  message_len_ = data.peekBEInt<uint32_t>(1);
+  const MsgBodyReader& message_factory = std::get<1>(msg_processor.get());
+  uint32_t message_len = data.peekBEInt<uint32_t>(1);
 
-  const auto msgParser = f();
+  replacement_message_ = message_factory();
   // Run the validation.
   // Because the message validation may return NeedMoreData error, data must stay intact (no
   // draining) until the remaining data arrives and validator will run again. Validator therefore
   // starts at offset 5 (1 byte message type and 4 bytes of length). This is in contrast to
   // processing of the message, which assumes that message has been validated and starts at the
   // beginning of the message.
-  Message::ValidationResult validationResult = msgParser->validate(data, 5, message_len_ - 4);
+  Message::ValidationResult validationResult =
+      replacement_message_->validate(data, 5, message_len - 4);
 
   if (validationResult == Message::ValidationNeedMoreData) {
     ENVOY_LOG(trace, "postgres_proxy: cannot parse message. Not enough bytes in the buffer.");
@@ -402,37 +352,15 @@ Decoder::Result DecoderImpl::onDataInSync(Buffer::Instance& data, bool frontend)
     return Decoder::Result::ReadyForNext;
   }
 
-  // Drain message code and length fields.
-  // Processing the message assumes that message starts at the beginning of the buffer.
+  // Drain message type and length
   data.drain(5);
 
-  // Store message content (without length) to the mutable buffer
-  // and remember start position for the future replacement
-  uint32_t message_len_without_size = message_len_ - 4;
-  replace_message_ = Buffer::OwnedImpl(data.linearize(message_len_without_size), message_len_without_size);
+  Buffer::OwnedImpl message_data;
+  message_data.move(data, message_len - 4);
 
-  omit_ = false;
-  processMessageBody(data, msg_processor.direction_, message_len_without_size, msg, msgParser);
-  if (!omit_) {
-    // Integrate replace data to the original data (length is rewritten)
-    Buffer::OwnedImpl new_message_data;
-    new_message_data.move(*orig_data_, curr_msg_pos_in_orig_data_ + 1);
-    new_message_data.writeBEInt<uint32_t>(replace_message_.length() + sizeof(uint32_t));
-    new_message_data.add(replace_message_);
-    orig_data_->drain(message_len_);
-    new_message_data.move(*orig_data_);
-    orig_data_->move(new_message_data);
+  processMessageBody(message_data, frontend, msg_processor);
 
-    curr_msg_pos_in_orig_data_ += replace_message_.length() + 5;
-  } else {
-    // Omit message (including identifier)
-    Buffer::OwnedImpl new_message_data;
-    new_message_data.move(*orig_data_, curr_msg_pos_in_orig_data_);
-    orig_data_->drain(message_len_ + 1);
-    new_message_data.move(*orig_data_);
-    orig_data_->move(new_message_data);
-  }
-
+  ENVOY_LOG(trace, "postgres_proxy: {} bytes remaining in buffer", data.length());
   return Decoder::Result::ReadyForNext;
 }
 
@@ -448,31 +376,6 @@ Decoder::Result DecoderImpl::onDataInSync(Buffer::Instance& data, bool frontend)
 Decoder::Result DecoderImpl::onDataIgnore(Buffer::Instance& data, bool) {
   data.drain(data.length());
   return Decoder::Result::ReadyForNext;
-}
-
-// Method is called when C (CommandComplete) message has been
-// decoded. It extracts the keyword from message's payload
-// and updates stats associated with that keyword.
-void DecoderImpl::decodeBackendStatements() {
-  // The message_ contains the statement. Find space character
-  // and the statement is the first word. If space cannot be found
-  // try to find for the null terminator character (\0).
-  std::size_t position = message_.find(' ');
-  if (position == std::string::npos) {
-    // If the null terminator character (\0) cannot be found then
-    // take the whole message.
-    position = message_.find('\0');
-  }
-  const std::string statement = message_.substr(0, position);
-
-  auto it = BE_statements_.find(statement);
-  if (it != BE_statements_.end()) {
-    (*it).second(this);
-  } else {
-    callbacks_->incStatements(DecoderCallbacks::StatementType::Other);
-    callbacks_->incTransactions();
-    callbacks_->incTransactionsCommit();
-  }
 }
 
 Decoder::Result DecoderImpl::onDataInNegotiating(Buffer::Instance& data, bool frontend) {
@@ -514,120 +417,60 @@ Decoder::Result DecoderImpl::onDataInNegotiating(Buffer::Instance& data, bool fr
   return Decoder::Result::Stopped;
 }
 
-// Method is called when X (Terminate) message
-// is encountered by the decoder.
-void DecoderImpl::decodeFrontendTerminate() {
-    if (session_.inTransaction()) {
-    session_.setInTransaction(false);
-    callbacks_->incTransactionsRollback();
-  }
-}
-
-// Method does deep inspection of Authentication message.
-// It looks for 4 bytes of zeros, which means that login to
-// database was successful.
-void DecoderImpl::decodeAuthentication() {
-    // Check if auth message indicates successful authentication.
-  // Length must be 8 and payload must be 0.
-  if ((8 == message_len_) && (0 == message_.data()[0]) && (0 == message_.data()[1]) &&
-      (0 == message_.data()[2]) && (0 == message_.data()[3])) {
-    incSessionsUnencrypted();
-  }
-}
-
-// Method is used to parse Error and Notice messages. Their syntax is the same, but they
-// use different keywords inside the message and statistics fields are different.
-void DecoderImpl::decodeErrorNotice(MsgParserDict& types) {
-  // Error/Notice message should start with character "S".
-  if (message_[0] != 'S') {
-    types.unknown_(this);
-    return;
-  }
-
-  for (const auto& it : types.keywords_) {
-    // Try to find a keyword with S prefix or V prefix.
-    // Postgres versions prior to 9.6 use only S prefix while
-    // versions higher than 9.6 use S and V prefixes.
-    if ((message_.find("S" + it.first) != std::string::npos) ||
-        (message_.find("V" + it.first) != std::string::npos)) {
-      it.second(this);
-      return;
-    }
-  }
-
-  // Keyword was not found in the message. Count is as Unknown.
-  types.unknown_(this);
-}
-
-// Method parses E (Error) message and looks for string
-// indicating that error happened.
-void DecoderImpl::decodeBackendErrorResponse() { decodeErrorNotice(BE_errors_); }
-
-// Method parses N (Notice) message and looks for string
-// indicating its meaning. It can be warning, notice, info, debug or log.
-void DecoderImpl::decodeBackendNoticeResponse() { decodeErrorNotice(BE_notices_); }
-
-// Method parses Parse message of the following format:
-// String: The name of the destination prepared statement (an empty string selects the unnamed
-// prepared statement).
-//
-// String: The query string to be parsed.
-//
-// Int16: The number of parameter data
-// types specified (can be zero). Note that this is not an indication of the number of parameters
-// that might appear in the query string, only the number that the frontend wants to pre-specify
-// types for. Then, for each parameter, there is the following:
-//
-// Int32: Specifies the object ID of
-// the parameter data type. Placing a zero here is equivalent to leaving the type unspecified.
 void DecoderImpl::onParse() {
-  omit_ = !callbacks_->processParse(replace_message_);
+  auto casted_message = Common::Utils::dynamic_unique_cast<ParseMessage>(std::move(replacement_message_));
+  callbacks_->processParse(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
 }
 
 void DecoderImpl::onQuery() {
-  omit_ = !callbacks_->processQuery(replace_message_);
-}
-
-void DecoderImpl::onRowDescription() {
-  callbacks_->processRowDescription(replace_message_);
-}
-
-void DecoderImpl::onDataRow() {
-  callbacks_->processDataRow(replace_message_);
-}
-
-void DecoderImpl::onCommandComplete() {
-  callbacks_->processCommandComplete(replace_message_);
-}
-
-void DecoderImpl::onEmptyQueryResponse() {
-  callbacks_->processEmptyQueryResponse();
-}
-
-void DecoderImpl::onErrorResponse() {
-  callbacks_->processErrorResponse(replace_message_);
-}
-
-// Method is invoked on clear-text Startup message.
-// The message format is continuous string of the following format:
-// user<username>database<database-name>application_name<application>encoding<encoding-type>
-void DecoderImpl::onStartup() {
-    // First 4 bytes of startup message contains version code.
-  // It is skipped. After that message contains attributes.
-  attributes_ = absl::StrSplit(message_.substr(4), absl::ByChar('\0'), absl::SkipEmpty());
-
-  // If "database" attribute is not found, default it to "user" attribute.
-  if ((attributes_.find("database") == attributes_.end()) &&
-      (attributes_.find("user") != attributes_.end())) {
-    attributes_["database"] = attributes_["user"];
+  auto casted_message = Common::Utils::dynamic_unique_cast<QueryMessage>(std::move(replacement_message_));
+  callbacks_->processQuery(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
   }
 }
 
-// Method generates displayable format of currently processed message.
-const std::string DecoderImpl::genDebugMessage(const std::unique_ptr<Message>& parser,
-                                               Buffer::Instance& data, uint32_t message_len) {
-  parser->read(data, message_len);
-  return parser->toString();
+void DecoderImpl::onRowDescription() {
+  auto casted_message = Common::Utils::dynamic_unique_cast<RowDescriptionMessage>(std::move(replacement_message_));
+  callbacks_->processRowDescription(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
+}
+
+void DecoderImpl::onDataRow() {
+  auto casted_message = Common::Utils::dynamic_unique_cast<DataRowMessage>(std::move(replacement_message_));
+  callbacks_->processDataRow(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
+}
+
+void DecoderImpl::onCommandComplete() {
+  auto casted_message = Common::Utils::dynamic_unique_cast<CommandCompleteMessage>(std::move(replacement_message_));
+  callbacks_->processCommandComplete(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
+}
+
+void DecoderImpl::onEmptyQueryResponse() {
+  auto casted_message = Common::Utils::dynamic_unique_cast<EmptyQueryResponseMessage>(std::move(replacement_message_));
+  callbacks_->processEmptyQueryResponse(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
+}
+
+void DecoderImpl::onErrorResponse() {
+  auto casted_message = Common::Utils::dynamic_unique_cast<ErrorResponseMessage>(std::move(replacement_message_));
+  callbacks_->processErrorResponse(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
 }
 
 } // namespace PostgresTDE

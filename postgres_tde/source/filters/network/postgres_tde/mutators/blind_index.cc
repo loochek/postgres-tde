@@ -12,6 +12,11 @@ namespace PostgresTDE {
 BlindIndexMutator::BlindIndexMutator(DatabaseEncryptionConfig *config) : config_(config) {}
 
 Result BlindIndexMutator::mutateQuery(hsql::SQLParserResult& query) {
+  comparison_mutation_candidates_.clear();
+  group_by_mutation_candidates_.clear();
+  insert_mutation_candidates_.clear();
+  update_mutation_candidates_.clear();
+
   CHECK_RESULT(Visitor::visitQuery(query));
   CHECK_RESULT(mutateComparisons());
   CHECK_RESULT(mutateGroupByExpressions());
@@ -20,18 +25,16 @@ Result BlindIndexMutator::mutateQuery(hsql::SQLParserResult& query) {
   return Result::ok;
 }
 
-void BlindIndexMutator::mutateResult() {}
-
 Result BlindIndexMutator::visitExpression(hsql::Expr* expr) {
   switch (expr->type) {
   case hsql::kExprColumnRef: {
     if (in_select_body_) {
       // SELECT of possibly indexed column is ok
-      return Result::ok;
+      return Visitor::visitExpression(expr);
     } else if (in_group_by_) {
       // GROUP BY possibly indexed column is ok, but it's necessary to replace it to corresponding BI column
       group_by_mutation_candidates_.push_back(expr);
-      return Result::ok;
+      return Visitor::visitExpression(expr);
     }
 
     // Other usages should be prohibited
@@ -46,9 +49,9 @@ Result BlindIndexMutator::visitExpression(hsql::Expr* expr) {
     if (column_config != nullptr && column_config->hasBlindIndex()) {
       return Result::makeError(
           fmt::format("postgres_tde: invalid use of blind indexed column {}.{}", table_name, expr->name));
-    } else {
-      return Result::ok;
     }
+
+    return Visitor::visitExpression(expr);
   }
   default:
     return Visitor::visitExpression(expr);
@@ -72,10 +75,6 @@ Result BlindIndexMutator::visitOperatorExpression(hsql::Expr* expr) {
 }
 
 Result BlindIndexMutator::mutateComparisons() {
-  absl::Cleanup cleanup = [this]() {
-    comparison_mutation_candidates_.clear();
-  };
-
   for (hsql::Expr* expr : comparison_mutation_candidates_) {
     assert(expr->isType(hsql::kExprOperator)
            && (expr->opType == hsql::OperatorType::kOpEquals || expr->opType == hsql::OperatorType::kOpNotEquals)
@@ -136,10 +135,6 @@ Result BlindIndexMutator::visitUpdateStatement(hsql::UpdateStatement* stmt) {
 }
 
 Result BlindIndexMutator::mutateGroupByExpressions() {
-  absl::Cleanup cleanup = [this]() {
-    group_by_mutation_candidates_.clear();
-  };
-
   for (hsql::Expr* column : group_by_mutation_candidates_) {
     assert(column->isType(hsql::kExprColumnRef));
 
@@ -164,10 +159,6 @@ Result BlindIndexMutator::mutateGroupByExpressions() {
 }
 
 Result BlindIndexMutator::mutateInsertStatement() {
-  absl::Cleanup cleanup = [this]() {
-    insert_mutation_candidates_.clear();
-  };
-
   for (hsql::InsertStatement* stmt: insert_mutation_candidates_) {
     if (stmt->columns->size() != stmt->values->size()) {
       return Result::makeError("postgres_tde: bad INSERT statement");
@@ -211,13 +202,9 @@ Result BlindIndexMutator::mutateInsertStatement() {
 }
 
 Result BlindIndexMutator::mutateUpdateStatement() {
-  absl::Cleanup cleanup = [this]() {
-    update_mutation_candidates_.clear();
-  };
-
   for (hsql::UpdateStatement* stmt: update_mutation_candidates_) {
     std::vector<hsql::UpdateClause*> bi_updates;
-    absl::Cleanup cleanup2 = [&]() {
+    absl::Cleanup cleanup = [&]() {
       for (hsql::UpdateClause* update : bi_updates) {
         free(update->column);
         delete update->value;
@@ -226,7 +213,7 @@ Result BlindIndexMutator::mutateUpdateStatement() {
     };
 
     for (hsql::UpdateClause* update : *stmt->updates) {
-      ColumnConfig * column_config = config_->getColumnConfig(stmt->table->name, update->column);
+      ColumnConfig* column_config = config_->getColumnConfig(stmt->table->name, update->column);
       if (column_config == nullptr || !column_config->hasBlindIndex()) {
         continue;
       }
@@ -254,21 +241,21 @@ hsql::Expr* BlindIndexMutator::createHashLiteral(hsql::Expr* orig_literal, Colum
     return hsql::Expr::makeNullLiteral();
   case hsql::kExprLiteralString: {
     const std::string& hmac_hex_str = generateHMACString(
-        std::string_view(static_cast<const char*>(orig_literal->name), strlen(orig_literal->name) + 1),
+        absl::string_view(static_cast<const char*>(orig_literal->name), strlen(orig_literal->name) + 1),
         column_config
     );
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(hmac_hex_str));
   }
   case hsql::kExprLiteralInt: {
     const std::string& hmac_hex_str = generateHMACString(
-        std::string_view(reinterpret_cast<const char*>(&orig_literal->ival), sizeof(orig_literal->ival)),
+        absl::string_view(reinterpret_cast<const char*>(&orig_literal->ival), sizeof(orig_literal->ival)),
         column_config
     );
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(hmac_hex_str));
   }
   case hsql::kExprLiteralFloat: {
     const std::string& hmac_hex_str = generateHMACString(
-        std::string_view(reinterpret_cast<const char*>(&orig_literal->fval), sizeof(orig_literal->fval)),
+        absl::string_view(reinterpret_cast<const char*>(&orig_literal->fval), sizeof(orig_literal->fval)),
         column_config
     );
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(hmac_hex_str));

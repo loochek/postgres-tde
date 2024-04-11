@@ -10,12 +10,10 @@ package(default_visibility = ["//visibility:public"])
 envoy_cc_library(
     name = "sqlutils_lib_2",
     srcs = [
-        "sqlutils.cc",
         "ast/visitor.cc",
         "ast/dump_visitor.cc",
     ],
     hdrs = [
-        "sqlutils.h",
         "ast/visitor.h",
         "ast/dump_visitor.h",
     ],

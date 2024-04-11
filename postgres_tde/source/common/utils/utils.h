@@ -25,6 +25,21 @@ struct Result {
 
 char* makeOwnedCString(const std::string& str);
 
+template <typename To, typename From>
+std::unique_ptr<To> dynamic_unique_cast(std::unique_ptr<From>&& p) {
+  if (To* cast = dynamic_cast<To*>(p.get())) {
+    std::unique_ptr<To> result(cast);
+    p.release();
+    return result;
+  }
+
+  return std::unique_ptr<To>(nullptr);
+}
+
+inline size_t max_ciphertext_size(size_t plaintext_size, size_t block_size) {
+  return ((plaintext_size + block_size) / block_size) * block_size;
+}
+
 } // namespace Utils
 } // namespace Common
 } // namespace Extensions

@@ -89,26 +89,33 @@ std::string ByteN::toString() const {
 // VarByteN type methods.
 bool VarByteN::read(const Buffer::Instance& data, uint64_t& pos, uint64_t& left) {
   // len_ was set by validator, skip it.
+  int32_t len = data.peekBEInt<int32_t>(pos);
+
   pos += sizeof(int32_t);
   left -= sizeof(int32_t);
-  if (len_ < 1) {
+  if (len < 1) {
     // There is no payload if length is not positive.
-    value_.clear();
+    value_ = std::nullopt;
     return true;
   }
 
-  value_.resize(len_);
-  data.copyOut(pos, len_, value_.data());
-  pos += len_;
-  left -= len_;
+  value_ = std::vector<uint8_t>();
+  value_->resize(len);
+  data.copyOut(pos, len, value_->data());
+  pos += len;
+  left -= len;
   return true;
 }
 
 std::string VarByteN::toString() const {
   std::string out;
-  out = fmt::format("[({} bytes):", len_);
-  absl::StrAppend(&out, absl::StrJoin(value_, " "));
-  absl::StrAppend(&out, "]");
+  if (value_.has_value()) {
+    out = fmt::format("[({} bytes):", value_->size());
+    absl::StrAppend(&out, absl::StrJoin(*value_, " "));
+    absl::StrAppend(&out, "]");
+  } else {
+    out = "[null]";
+  }
   return out;
 }
 
@@ -124,37 +131,28 @@ Message::ValidationResult VarByteN::validate(const Buffer::Instance& data, const
   }
 
   // Read length of the VarByteN structure.
-  len_ = data.peekBEInt<int32_t>(pos);
-  if (static_cast<int64_t>(len_) > static_cast<int64_t>(left)) {
+  int32_t len = data.peekBEInt<int32_t>(pos);
+  if (static_cast<int64_t>(len) > static_cast<int64_t>(left)) {
     // VarByteN would extend past the current message boundaries.
     // Lengths of message and individual fields do not match.
     return Message::ValidationFailed;
   }
 
-  if (len_ < 1) {
+  if (len < 1) {
     // There is no payload if length is not positive.
     pos += sizeof(int32_t);
     left -= sizeof(int32_t);
     return Message::ValidationOK;
   }
 
-  if ((data.length() - pos) < (len_ + sizeof(int32_t))) {
+  if ((data.length() - pos) < (len + sizeof(int32_t))) {
     return Message::ValidationNeedMoreData;
   }
 
-  pos += (len_ + sizeof(int32_t));
-  left -= (len_ + sizeof(int32_t));
+  pos += (len + sizeof(int32_t));
+  left -= (len + sizeof(int32_t));
 
   return Message::ValidationOK;
-}
-
-ErrorResponseMessageType createErrorResponseMessage(std::string error) {
-  std::vector<std::unique_ptr<Sequence<Byte1, String>>> errorBody;
-  errorBody.emplace_back(std::make_unique<Sequence<Byte1, String>>(Byte1('S'), String("ERROR")));
-  errorBody.emplace_back(
-      std::make_unique<Sequence<Byte1, String>>(Byte1('M'), String(std::move(error))));
-  return ErrorResponseMessageType(Repeated<Sequence<Byte1, String>>(std::move(errorBody)),
-                                  Byte1('\0'));
 }
 
 } // namespace PostgresTDE

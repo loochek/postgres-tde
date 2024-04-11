@@ -7,9 +7,10 @@
 #include "source/common/common/logger.h"
 
 #include "absl/container/flat_hash_map.h"
-#include "postgres_tde/source/common/sqlutils/sqlutils.h"
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_message.h"
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_session.h"
+#include "postgres_tde/source/filters/network/postgres_tde/postgres_protocol.h"
+#include "postgres_tde/source/filters/network/postgres_tde/postgres_mutation_manager.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -21,35 +22,15 @@ class DecoderCallbacks {
 public:
   virtual ~DecoderCallbacks() = default;
 
-  virtual void incMessagesBackend() PURE;
-  virtual void incMessagesFrontend() PURE;
-  virtual void incMessagesUnknown() PURE;
+  virtual void processQuery(std::unique_ptr<QueryMessage>&) PURE;
+  virtual void processParse(std::unique_ptr<ParseMessage>&) PURE;
 
-  virtual void incSessionsEncrypted() PURE;
-  virtual void incSessionsUnencrypted() PURE;
+  virtual void processRowDescription(std::unique_ptr<RowDescriptionMessage>&) PURE;
+  virtual void processDataRow(std::unique_ptr<DataRowMessage>&) PURE;
 
-  enum class StatementType { Insert, Delete, Select, Update, Other, Noop };
-  virtual void incStatements(StatementType) PURE;
-
-  virtual void incTransactions() PURE;
-  virtual void incTransactionsCommit() PURE;
-  virtual void incTransactionsRollback() PURE;
-
-  enum class NoticeType { Warning, Notice, Debug, Info, Log, Unknown };
-  virtual void incNotices(NoticeType) PURE;
-
-  enum class ErrorType { Error, Fatal, Panic, Unknown };
-  virtual void incErrors(ErrorType) PURE;
-
-  virtual bool processQuery(Buffer::Instance& replace_message) PURE;
-  virtual bool processParse(Buffer::Instance& replace_message) PURE;
-
-  virtual void processRowDescription(Buffer::Instance& replace_message) PURE;
-  virtual void processDataRow(Buffer::Instance& replace_message) PURE;
-
-  virtual void processCommandComplete(Buffer::Instance& replace_message) PURE;
-  virtual void processEmptyQueryResponse() PURE;
-  virtual void processErrorResponse(Buffer::Instance&) PURE;
+  virtual void processCommandComplete(std::unique_ptr<CommandCompleteMessage>&) PURE;
+  virtual void processEmptyQueryResponse(std::unique_ptr<EmptyQueryResponseMessage>&) PURE;
+  virtual void processErrorResponse(std::unique_ptr<ErrorResponseMessage>&) PURE;
 
   virtual bool onSSLRequest() PURE;
   virtual bool shouldEncryptUpstream() const PURE;
@@ -60,7 +41,7 @@ public:
 class MutationManager;
 
 // Postgres message decoder.
-class Decoder {
+class Decoder : public MutationManagerCallbacks {
 public:
   virtual ~Decoder() = default;
 
@@ -73,17 +54,10 @@ public:
             // data. This happens when decoder wants filter to perform some action, for example to
             // call starttls transport socket to enable TLS.
   };
-  virtual Result onData(Buffer::Instance& parse_data, Buffer::Instance& orig_data, bool frontend, bool first_msg) PURE;
+  virtual Result onData(Buffer::Instance& parse_data, bool frontend) PURE;
+  virtual Buffer::Instance& getBackendReplacementData() PURE;
+  virtual Buffer::Instance& getFrontendReplacementData() PURE;
   virtual PostgresSession& getSession() PURE;
-
-  const Extensions::Common::SQLUtils::SQLUtils::DecoderAttributes& getAttributes() const {
-    return attributes_;
-  }
-
-protected:
-  // Decoder attributes extracted from Startup message.
-  // It can be username, database name, client app type, etc.
-  Extensions::Common::SQLUtils::SQLUtils::DecoderAttributes attributes_;
 };
 
 using DecoderPtr = std::unique_ptr<Decoder>;
@@ -92,10 +66,13 @@ class DecoderImpl : public Decoder, Logger::Loggable<Logger::Id::filter> {
 public:
   DecoderImpl(DecoderCallbacks* callbacks) : callbacks_(callbacks) { initialize(); }
 
-  Result onData(Buffer::Instance& parse_data, Buffer::Instance& orig_data, bool frontend, bool first_msg) override;
-  PostgresSession& getSession() override { return session_; }
+  Result onData(Buffer::Instance& parse_data, bool frontend) override;
+  Buffer::Instance& getFrontendReplacementData() override { return frontend_replacement_data_; }
+  Buffer::Instance& getBackendReplacementData() override { return backend_replacement_data_; }
 
-  std::string getMessage() { return message_; }
+  void emitBackendMessage(MessagePtr) override;
+
+  PostgresSession& getSession() override { return session_; }
 
   void initialize();
 
@@ -160,15 +137,7 @@ protected:
     MsgAction unknown_;
   };
 
-  void processMessageBody(Buffer::Instance& data, absl::string_view direction, uint32_t length,
-                          MessageProcessor& msg, const std::unique_ptr<Message>& parser);
-  void decode();
-  void decodeAuthentication();
-  void decodeBackendStatements();
-  void decodeBackendErrorResponse();
-  void decodeBackendNoticeResponse();
-  void decodeFrontendTerminate();
-  void decodeErrorNotice(MsgParserDict& types);
+  void processMessageBody(Buffer::Instance& message_data, bool frontend, MessageProcessor& processor);
   void onQuery();
   void onRowDescription();
   void onDataRow();
@@ -176,26 +145,16 @@ protected:
   void onEmptyQueryResponse();
   void onErrorResponse();
   void onParse();
-  void onStartup();
-
-  void incMessagesUnknown() { callbacks_->incMessagesUnknown(); }
-  void incSessionsEncrypted() { callbacks_->incSessionsEncrypted(); }
-  void incSessionsUnencrypted() { callbacks_->incSessionsUnencrypted(); }
-
-  // Helper method generating currently processed message in
-  // displayable format.
-  const std::string genDebugMessage(const std::unique_ptr<Message>& parser, Buffer::Instance& data,
-                                    uint32_t message_len);
 
   DecoderCallbacks* callbacks_{};
   PostgresSession session_{};
 
   // The following fields store result of message parsing.
   char command_{'-'};
-  std::string message_;
-  uint32_t message_len_{};
-  Buffer::OwnedImpl replace_message_;
-  bool omit_{false};
+  std::unique_ptr<Message> replacement_message_;
+
+  Buffer::OwnedImpl backend_replacement_data_;
+  Buffer::OwnedImpl frontend_replacement_data_;
 
   bool encrypted_{false}; // tells if exchange is encrypted
 
@@ -207,7 +166,7 @@ protected:
   // Startup message message which does not start with 1 byte TYPE.
   // It starts with message length and must be therefore handled
   // differently.
-  MessageProcessor first_;
+  MessageProcessor startup_msg_processor_;
 
   // hash map for dispatching backend transaction messages
   KeywordProcessor BE_statements_;
@@ -219,9 +178,6 @@ protected:
   // while sending other packets. Currently used only when negotiating
   // upstream SSL.
   Buffer::OwnedImpl temp_storage_;
-
-  Buffer::Instance *orig_data_;
-  uint32_t curr_msg_pos_in_orig_data_;
 
   // MAX_STARTUP_PACKET_LENGTH is defined in Postgres source code
   // as maximum size of initial packet.

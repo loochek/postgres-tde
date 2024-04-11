@@ -59,24 +59,17 @@ def envoy_select_static_extension_registration(xs, repository = ""):
         "//conditions:default": xs,
     })
 
-# Selects the given values if Envoy Mobile request compression is enabled in the current build.
-def envoy_select_envoy_mobile_request_compression(xs, repository = ""):
-    return select({
-        repository + "//bazel:disable_envoy_mobile_request_compression": [],
-        "//conditions:default": xs,
-    })
-
-# Selects the given values if Envoy Mobile stats reporting is enabled in the current build.
-def envoy_select_envoy_mobile_stats_reporting(xs, repository = ""):
-    return select({
-        repository + "//bazel:disable_envoy_mobile_stats_reporting": [],
-        "//conditions:default": xs,
-    })
-
 # Selects the given values if the Envoy Mobile listener is enabled in the current build.
 def envoy_select_envoy_mobile_listener(xs, repository = ""):
     return select({
         repository + "//bazel:disable_envoy_mobile_listener": [],
+        "//conditions:default": xs,
+    })
+
+# Selects the given values if Envoy Mobile xDS is enabled in the current build.
+def envoy_select_envoy_mobile_xds(xs, repository = ""):
+    return select({
+        repository + "//bazel:disable_envoy_mobile_xds": [],
         "//conditions:default": xs,
     })
 
@@ -161,7 +154,6 @@ def envoy_select_wasm_v8(xs):
         "@envoy//bazel:wasm_v8": xs,
         "@envoy//bazel:wasm_wamr": [],
         "@envoy//bazel:wasm_wasmtime": [],
-        "@envoy//bazel:wasm_wavm": [],
         "@envoy//bazel:wasm_disabled": [],
         # TODO(phlax): re-enable once issues with llvm profiler are resolved
         #   (see https://github.com/envoyproxy/envoy/issues/24164)
@@ -175,7 +167,6 @@ def envoy_select_wasm_v8_bool():
         "@envoy//bazel:wasm_v8": True,
         "@envoy//bazel:wasm_wamr": False,
         "@envoy//bazel:wasm_wasmtime": False,
-        "@envoy//bazel:wasm_wavm": False,
         "@envoy//bazel:wasm_disabled": False,
         # TODO(phlax): re-enable once issues with llvm profiler are resolved
         #   (see https://github.com/envoyproxy/envoy/issues/24164)
@@ -187,13 +178,6 @@ def envoy_select_wasm_v8_bool():
 def envoy_select_wasm_wamr(xs):
     return select({
         "@envoy//bazel:wasm_wamr": xs,
-        "//conditions:default": [],
-    })
-
-# Selects the given values depending on the Wasm runtimes enabled in the current build.
-def envoy_select_wasm_wavm(xs):
-    return select({
-        "@envoy//bazel:wasm_wavm": xs,
         "//conditions:default": [],
     })
 
