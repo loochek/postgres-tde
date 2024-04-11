@@ -17,8 +17,8 @@ public:
   EncryptionMutator(const EncryptionMutator&) = delete;
 
   Result mutateQuery(hsql::SQLParserResult& query) override;
-  void mutateRowDescription(RowDescriptionMessage&) override;
-  void mutateDataRow(DataRowMessage&) override;
+  Result mutateRowDescription(RowDescriptionMessage&) override;
+  Result mutateDataRow(DataRowMessage&) override;
 
 protected:
   Result visitExpression(hsql::Expr* expr) override;

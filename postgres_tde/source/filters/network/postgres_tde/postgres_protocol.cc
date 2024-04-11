@@ -5,13 +5,17 @@ namespace Extensions {
 namespace NetworkFilters {
 namespace PostgresTDE {
 
-ErrorResponseMessage createErrorResponseMessage(std::string error) {
+std::unique_ptr<ReadyForQueryMessage> createReadyForQueryMessage() {
+  return std::make_unique<ReadyForQueryMessage>(Byte1('I'));
+}
+
+std::unique_ptr<ErrorResponseMessage> createErrorResponseMessage(std::string error) {
   std::vector<std::unique_ptr<Sequence<Byte1, String>>> errorBody;
   errorBody.emplace_back(std::make_unique<Sequence<Byte1, String>>(Byte1('S'), String("ERROR")));
   errorBody.emplace_back(
       std::make_unique<Sequence<Byte1, String>>(Byte1('M'), String(std::move(error))));
-  return ErrorResponseMessage(Repeated<Sequence<Byte1, String>>(std::move(errorBody)),
-                                  Byte1('\0'));
+  return std::make_unique<ErrorResponseMessage>(Repeated<Sequence<Byte1, String>>(std::move(errorBody)),
+                                                Byte1('\0'));
 }
 
 } // namespace PostgresTDE

@@ -12,6 +12,11 @@ namespace PostgresTDE {
 BlindIndexMutator::BlindIndexMutator(DatabaseEncryptionConfig *config) : config_(config) {}
 
 Result BlindIndexMutator::mutateQuery(hsql::SQLParserResult& query) {
+  comparison_mutation_candidates_.clear();
+  group_by_mutation_candidates_.clear();
+  insert_mutation_candidates_.clear();
+  update_mutation_candidates_.clear();
+
   CHECK_RESULT(Visitor::visitQuery(query));
   CHECK_RESULT(mutateComparisons());
   CHECK_RESULT(mutateGroupByExpressions());
@@ -70,10 +75,6 @@ Result BlindIndexMutator::visitOperatorExpression(hsql::Expr* expr) {
 }
 
 Result BlindIndexMutator::mutateComparisons() {
-  absl::Cleanup cleanup = [this]() {
-    comparison_mutation_candidates_.clear();
-  };
-
   for (hsql::Expr* expr : comparison_mutation_candidates_) {
     assert(expr->isType(hsql::kExprOperator)
            && (expr->opType == hsql::OperatorType::kOpEquals || expr->opType == hsql::OperatorType::kOpNotEquals)
@@ -134,10 +135,6 @@ Result BlindIndexMutator::visitUpdateStatement(hsql::UpdateStatement* stmt) {
 }
 
 Result BlindIndexMutator::mutateGroupByExpressions() {
-  absl::Cleanup cleanup = [this]() {
-    group_by_mutation_candidates_.clear();
-  };
-
   for (hsql::Expr* column : group_by_mutation_candidates_) {
     assert(column->isType(hsql::kExprColumnRef));
 
@@ -162,10 +159,6 @@ Result BlindIndexMutator::mutateGroupByExpressions() {
 }
 
 Result BlindIndexMutator::mutateInsertStatement() {
-  absl::Cleanup cleanup = [this]() {
-    insert_mutation_candidates_.clear();
-  };
-
   for (hsql::InsertStatement* stmt: insert_mutation_candidates_) {
     if (stmt->columns->size() != stmt->values->size()) {
       return Result::makeError("postgres_tde: bad INSERT statement");
@@ -209,13 +202,9 @@ Result BlindIndexMutator::mutateInsertStatement() {
 }
 
 Result BlindIndexMutator::mutateUpdateStatement() {
-  absl::Cleanup cleanup = [this]() {
-    update_mutation_candidates_.clear();
-  };
-
   for (hsql::UpdateStatement* stmt: update_mutation_candidates_) {
     std::vector<hsql::UpdateClause*> bi_updates;
-    absl::Cleanup cleanup2 = [&]() {
+    absl::Cleanup cleanup = [&]() {
       for (hsql::UpdateClause* update : bi_updates) {
         free(update->column);
         delete update->value;
@@ -224,7 +213,7 @@ Result BlindIndexMutator::mutateUpdateStatement() {
     };
 
     for (hsql::UpdateClause* update : *stmt->updates) {
-      ColumnConfig * column_config = config_->getColumnConfig(stmt->table->name, update->column);
+      ColumnConfig* column_config = config_->getColumnConfig(stmt->table->name, update->column);
       if (column_config == nullptr || !column_config->hasBlindIndex()) {
         continue;
       }

@@ -138,6 +138,11 @@ Decoder::Result DecoderImpl::onData(Buffer::Instance& parse_data, bool frontend)
   }
 }
 
+void DecoderImpl::emitBackendMessage(MessagePtr message) {
+  ASSERT(message->isWriteable());
+  message->write(backend_replacement_data_);
+}
+
 /* Handler for messages when decoder is in Init State. There are very few message types which
    are allowed in this state.
    If the initial message has the correct syntax and  indicates that session should be in
@@ -231,7 +236,7 @@ Decoder::Result DecoderImpl::onDataInit(Buffer::Instance& data, bool) {
   Buffer::OwnedImpl message_data;
   message_data.move(data, message_len - 4);
 
-  processMessageBody(message_data, FRONTEND, startup_msg_processor_);
+  processMessageBody(message_data, true, startup_msg_processor_);
 
   ENVOY_LOG(trace, "postgres_proxy: {} bytes remaining in buffer", data.length());
   return result;
@@ -240,8 +245,10 @@ Decoder::Result DecoderImpl::onDataInit(Buffer::Instance& data, bool) {
 /*
   Method invokes actions associated with message type and generate debug logs.
 */
-void DecoderImpl::processMessageBody(Buffer::Instance& message_data, absl::string_view direction,
+void DecoderImpl::processMessageBody(Buffer::Instance& message_data, bool frontend,
                                      MessageProcessor& processor) {
+  const absl::string_view& direction = frontend ? FRONTEND : BACKEND;
+
   replacement_message_->read(message_data, message_data.length());
 
   ENVOY_LOG(debug, "before processing:");
@@ -249,7 +256,6 @@ void DecoderImpl::processMessageBody(Buffer::Instance& message_data, absl::strin
   ENVOY_LOG(debug, "({}) length = {}", direction, message_data.length());
   ENVOY_LOG(debug, "({}) message = {}", direction, replacement_message_->toString());
 
-  omit_ = false;
   std::vector<MsgAction>& actions = std::get<2>(processor);
   if (!actions.empty()) {
     // Invoke actions associated with the type of received message.
@@ -258,29 +264,32 @@ void DecoderImpl::processMessageBody(Buffer::Instance& message_data, absl::strin
     }
   }
 
-  if (omit_) {
-    // Do not write message to the replacement data
+  if (!replacement_message_) {
+    // Message should not be written back (as it has been omitted or handled in the other way)
     return;
   }
 
-  uint64_t replace_data_old_length = replacement_data_.length();
+  Buffer::Instance& replacement_data = frontend ? frontend_replacement_data_ : backend_replacement_data_;
+
+//  uint64_t replace_data_old_length = replacement_data.length();
   if (replacement_message_->isWriteable()) {
-    // Write actual message
-    replacement_message_->write(replacement_data_);
+    // Write actual (possibly mutated) message
+    replacement_message_->write(replacement_data);
   } else {
     // Write old message data
     if (command_ != '-') {
-      replacement_data_.writeByte(command_);
+      replacement_data.writeByte(command_);
     }
-    replacement_data_.writeBEInt<uint32_t>(message_data.length() + 4);
-    replacement_data_.move(message_data);
+    replacement_data.writeBEInt<uint32_t>(message_data.length() + 4);
+    replacement_data.move(message_data);
   }
 
-  ENVOY_LOG(debug, "after processing:");
-  ENVOY_LOG(debug, "({}) command = {} ({})", direction, command_, std::get<0>(processor));
-  ENVOY_LOG(debug, "({}) length = {}", direction,
-            replacement_data_.length() - replace_data_old_length - 1);
-  ENVOY_LOG(debug, "({}) message = {}", direction, replacement_message_->toString());
+//  TODO: some logs
+//  ENVOY_LOG(debug, "after processing:");
+//  ENVOY_LOG(debug, "({}) command = {} ({})", direction, command_, std::get<0>(processor));
+//  ENVOY_LOG(debug, "({}) length = {}", direction,
+//            replacement_data.length() - replace_data_old_length - 1);
+//  ENVOY_LOG(debug, "({}) message = {}", direction, replacement_message_->toString());
 }
 
 /*
@@ -349,7 +358,7 @@ Decoder::Result DecoderImpl::onDataInSync(Buffer::Instance& data, bool frontend)
   Buffer::OwnedImpl message_data;
   message_data.move(data, message_len - 4);
 
-  processMessageBody(message_data, msg_processor_group.direction_, msg_processor);
+  processMessageBody(message_data, frontend, msg_processor);
 
   ENVOY_LOG(trace, "postgres_proxy: {} bytes remaining in buffer", data.length());
   return Decoder::Result::ReadyForNext;
@@ -408,45 +417,60 @@ Decoder::Result DecoderImpl::onDataInNegotiating(Buffer::Instance& data, bool fr
   return Decoder::Result::Stopped;
 }
 
-// Method parses Parse message of the following format:
-// String: The name of the destination prepared statement (an empty string selects the unnamed
-// prepared statement).
-//
-// String: The query string to be parsed.
-//
-// Int16: The number of parameter data
-// types specified (can be zero). Note that this is not an indication of the number of parameters
-// that might appear in the query string, only the number that the frontend wants to pre-specify
-// types for. Then, for each parameter, there is the following:
-//
-// Int32: Specifies the object ID of
-// the parameter data type. Placing a zero here is equivalent to leaving the type unspecified.
 void DecoderImpl::onParse() {
-  omit_ = !callbacks_->processParse(*dynamic_cast<ParseMessage *>(replacement_message_.get()));
+  auto casted_message = Common::Utils::dynamic_unique_cast<ParseMessage>(std::move(replacement_message_));
+  callbacks_->processParse(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
 }
 
 void DecoderImpl::onQuery() {
-  omit_ = !callbacks_->processQuery(*dynamic_cast<QueryMessage*>(replacement_message_.get()));
+  auto casted_message = Common::Utils::dynamic_unique_cast<QueryMessage>(std::move(replacement_message_));
+  callbacks_->processQuery(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
 }
 
 void DecoderImpl::onRowDescription() {
-  callbacks_->processRowDescription(*dynamic_cast<RowDescriptionMessage*>(replacement_message_.get()));
+  auto casted_message = Common::Utils::dynamic_unique_cast<RowDescriptionMessage>(std::move(replacement_message_));
+  callbacks_->processRowDescription(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
 }
 
 void DecoderImpl::onDataRow() {
-  callbacks_->processDataRow(*dynamic_cast<DataRowMessage *>(replacement_message_.get()));
+  auto casted_message = Common::Utils::dynamic_unique_cast<DataRowMessage>(std::move(replacement_message_));
+  callbacks_->processDataRow(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
 }
 
 void DecoderImpl::onCommandComplete() {
-  callbacks_->processCommandComplete(*dynamic_cast<CommandCompleteMessage *>(replacement_message_.get()));
+  auto casted_message = Common::Utils::dynamic_unique_cast<CommandCompleteMessage>(std::move(replacement_message_));
+  callbacks_->processCommandComplete(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
 }
 
 void DecoderImpl::onEmptyQueryResponse() {
-  callbacks_->processEmptyQueryResponse();
+  auto casted_message = Common::Utils::dynamic_unique_cast<EmptyQueryResponseMessage>(std::move(replacement_message_));
+  callbacks_->processEmptyQueryResponse(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
 }
 
 void DecoderImpl::onErrorResponse() {
-  callbacks_->processErrorResponse(*dynamic_cast<ErrorResponseMessage *>(replacement_message_.get()));
+  auto casted_message = Common::Utils::dynamic_unique_cast<ErrorResponseMessage>(std::move(replacement_message_));
+  callbacks_->processErrorResponse(casted_message);
+  if (casted_message) {
+    replacement_message_ = std::move(casted_message);
+  }
 }
 
 } // namespace PostgresTDE

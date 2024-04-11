@@ -32,6 +32,10 @@ public:
     return value<3>().value();
   }
 
+  auto& dataSize() {
+    return value<4>().value();
+  }
+
   auto& formatCode() {
     return value<6>().value();
   }
@@ -63,9 +67,8 @@ using ErrorResponseMessage = TypedMessage<'E', Repeated<Sequence<Byte1, String>>
 
 using ReadyForQueryMessage = TypedMessage<'Z', Byte1>;
 
-const inline ReadyForQueryMessage READY_FOR_QUERY_MESSAGE(Byte1('I'));
-
-ErrorResponseMessage createErrorResponseMessage(std::string error);
+std::unique_ptr<ReadyForQueryMessage> createReadyForQueryMessage();
+std::unique_ptr<ErrorResponseMessage> createErrorResponseMessage(std::string error);
 
 } // namespace PostgresTDE
 } // namespace NetworkFilters

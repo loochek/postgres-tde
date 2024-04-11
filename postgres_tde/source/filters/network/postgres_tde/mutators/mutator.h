@@ -19,8 +19,8 @@ public:
   virtual ~Mutator() = default;
 
   virtual Result mutateQuery(hsql::SQLParserResult&) PURE;
-  virtual void mutateRowDescription(RowDescriptionMessage&) {}
-  virtual void mutateDataRow(DataRowMessage&) {}
+  virtual Result mutateRowDescription(RowDescriptionMessage&) { return Result::ok; }
+  virtual Result mutateDataRow(DataRowMessage&) { return Result::ok; }
 
   MutationManager* getMutationManager() {
     return mutation_manager_;

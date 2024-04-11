@@ -538,6 +538,7 @@ template <typename... Types> std::unique_ptr<Message> createMsgBodyReader() {
   return std::make_unique<MessageImpl<Types...>>();
 }
 
+using MessagePtr = std::unique_ptr<Message>;
 
 } // namespace PostgresTDE
 } // namespace NetworkFilters

@@ -50,7 +50,7 @@ protected:
   virtual Result visitDeleteStatement(hsql::DeleteStatement* stmt);
 
   const std::string& getTableNameByAlias(const std::string& alias) const;
-  const ColumnRef* getColumnByAlias(const std::string& alias) const;
+  const ColumnRef* getColumnByAlias(const std::string& alias);
 
 protected:
   bool in_select_body_{false};

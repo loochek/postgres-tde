@@ -108,13 +108,13 @@ public:
   // Network::WriteFilter
   Network::FilterStatus onWrite(Buffer::Instance& data, bool end_stream) override;
 
-  bool processQuery(QueryMessage &) override;
-  bool processParse(ParseMessage &) override;
-  void processRowDescription(RowDescriptionMessage &) override;
-  void processDataRow(DataRowMessage &) override;
-  void processCommandComplete(CommandCompleteMessage &) override;
-  void processEmptyQueryResponse() override;
-  void processErrorResponse(ErrorResponseMessage &) override;
+  void processQuery(std::unique_ptr<QueryMessage>&) override;
+  void processParse(std::unique_ptr<ParseMessage>&) override;
+  void processRowDescription(std::unique_ptr<RowDescriptionMessage>&) override;
+  void processDataRow(std::unique_ptr<DataRowMessage>&) override;
+  void processCommandComplete(std::unique_ptr<CommandCompleteMessage>&) override;
+  void processEmptyQueryResponse(std::unique_ptr<EmptyQueryResponseMessage>&) override;
+  void processErrorResponse(std::unique_ptr<ErrorResponseMessage>&) override;
   bool onSSLRequest() override;
   bool shouldEncryptUpstream() const override;
   void sendUpstream(Buffer::Instance&) override;

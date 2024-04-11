@@ -10,6 +10,7 @@
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_message.h"
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_session.h"
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_protocol.h"
+#include "postgres_tde/source/filters/network/postgres_tde/postgres_mutation_manager.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -21,15 +22,15 @@ class DecoderCallbacks {
 public:
   virtual ~DecoderCallbacks() = default;
 
-  virtual bool processQuery(QueryMessage& message) PURE;
-  virtual bool processParse(ParseMessage& message) PURE;
+  virtual void processQuery(std::unique_ptr<QueryMessage>&) PURE;
+  virtual void processParse(std::unique_ptr<ParseMessage>&) PURE;
 
-  virtual void processRowDescription(RowDescriptionMessage& message) PURE;
-  virtual void processDataRow(DataRowMessage& message) PURE;
+  virtual void processRowDescription(std::unique_ptr<RowDescriptionMessage>&) PURE;
+  virtual void processDataRow(std::unique_ptr<DataRowMessage>&) PURE;
 
-  virtual void processCommandComplete(CommandCompleteMessage& message) PURE;
-  virtual void processEmptyQueryResponse() PURE;
-  virtual void processErrorResponse(ErrorResponseMessage&) PURE;
+  virtual void processCommandComplete(std::unique_ptr<CommandCompleteMessage>&) PURE;
+  virtual void processEmptyQueryResponse(std::unique_ptr<EmptyQueryResponseMessage>&) PURE;
+  virtual void processErrorResponse(std::unique_ptr<ErrorResponseMessage>&) PURE;
 
   virtual bool onSSLRequest() PURE;
   virtual bool shouldEncryptUpstream() const PURE;
@@ -40,7 +41,7 @@ public:
 class MutationManager;
 
 // Postgres message decoder.
-class Decoder {
+class Decoder : public MutationManagerCallbacks {
 public:
   virtual ~Decoder() = default;
 
@@ -54,7 +55,8 @@ public:
             // call starttls transport socket to enable TLS.
   };
   virtual Result onData(Buffer::Instance& parse_data, bool frontend) PURE;
-  virtual Buffer::Instance& getReplacementData() PURE;
+  virtual Buffer::Instance& getBackendReplacementData() PURE;
+  virtual Buffer::Instance& getFrontendReplacementData() PURE;
   virtual PostgresSession& getSession() PURE;
 };
 
@@ -65,8 +67,12 @@ public:
   DecoderImpl(DecoderCallbacks* callbacks) : callbacks_(callbacks) { initialize(); }
 
   Result onData(Buffer::Instance& parse_data, bool frontend) override;
+  Buffer::Instance& getFrontendReplacementData() override { return frontend_replacement_data_; }
+  Buffer::Instance& getBackendReplacementData() override { return backend_replacement_data_; }
+
+  void emitBackendMessage(MessagePtr) override;
+
   PostgresSession& getSession() override { return session_; }
-  Buffer::Instance& getReplacementData() override { return replacement_data_; }
 
   void initialize();
 
@@ -131,8 +137,7 @@ protected:
     MsgAction unknown_;
   };
 
-  void processMessageBody(Buffer::Instance& message_data, absl::string_view direction,
-                          MessageProcessor& processor);
+  void processMessageBody(Buffer::Instance& message_data, bool frontend, MessageProcessor& processor);
   void onQuery();
   void onRowDescription();
   void onDataRow();
@@ -146,9 +151,10 @@ protected:
 
   // The following fields store result of message parsing.
   char command_{'-'};
-  Buffer::OwnedImpl replacement_data_;
   std::unique_ptr<Message> replacement_message_;
-  bool omit_{false};
+
+  Buffer::OwnedImpl backend_replacement_data_;
+  Buffer::OwnedImpl frontend_replacement_data_;
 
   bool encrypted_{false}; // tells if exchange is encrypted
 

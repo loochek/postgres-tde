@@ -9,31 +9,27 @@ namespace Extensions {
 namespace NetworkFilters {
 namespace PostgresTDE {
 
-EncryptionMutator::EncryptionMutator(DatabaseEncryptionConfig* config) : config_(config) {}
+EncryptionMutator::EncryptionMutator(DatabaseEncryptionConfig* config) : config_(config) {
+}
 
 Result EncryptionMutator::mutateQuery(hsql::SQLParserResult& query) {
+  insert_mutation_candidates_.clear();
+  update_mutation_candidates_.clear();
+
   CHECK_RESULT(Visitor::visitQuery(query));
   CHECK_RESULT(mutateInsertStatement());
   CHECK_RESULT(mutateUpdateStatement());
 
-  //  auto& crypto_util_ext = Envoy::Common::Crypto::UtilityExtSingleton::get();
-  //  auto key = std::vector<uint8_t>({'a', 'e', 'g', 'r', 'j', 'a', 'd', 'f', 'n', 'a', 'd', 'f',
-  //  'i', 'a', 'd', 'f', 'g', 'i', 'd', 'f', 'a', 'i', 'd', 's', 'f', 'g', 's', 'd', 'h', 'n', 'g',
-  //  'h'}); std::string plain("а"); auto ciphertext = crypto_util_ext.AESEncrypt(key,
-  //  absl::string_view(plain.data(), plain.size() + 1)); ENVOY_LOG(error, "ciphertext: {}",
-  //  reinterpret_cast<const char*>(ciphertext.data())); auto decrypted =
-  //  crypto_util_ext.AESDecrypt(key, absl::string_view(reinterpret_cast<const
-  //  char*>(ciphertext.data()), ciphertext.size())); ENVOY_LOG(error, "decrypted: {}",
-  //  reinterpret_cast<const char*>(decrypted.data()));
-
   return Result::ok;
 }
 
-void EncryptionMutator::mutateRowDescription(RowDescriptionMessage& message) {
+Result EncryptionMutator::mutateRowDescription(RowDescriptionMessage& message) {
   data_row_config_.clear();
   for (auto& column : message.column_descriptions()) {
     auto column_ref = getColumnByAlias(column->name());
     if (column_ref == nullptr) {
+
+      data_row_config_.push_back(nullptr);
       continue;
     }
 
@@ -47,15 +43,21 @@ void EncryptionMutator::mutateRowDescription(RowDescriptionMessage& message) {
 
       // Ensure that encrypted data is returned as hex string
       ASSERT(column->formatCode() == 0);
+
+      // Replace data type OID and size
+      column->dataType() = config->origDataType();
+      column->dataSize() = config->origDataSize();
     }
   }
+
+  return Result::ok;
 }
 
-void EncryptionMutator::mutateDataRow(DataRowMessage& message) {
+Result EncryptionMutator::mutateDataRow(DataRowMessage& message) {
   ASSERT(message.columns().size() == data_row_config_.size());
   size_t columns_count = message.columns().size();
 
-  auto& crypto_util_ext = Envoy::Common::Crypto::UtilityExtSingleton::get();
+  auto& crypto_util_ext = Common::Crypto::UtilityExtSingleton::get();
   for (size_t i = 0; i < columns_count; i++) {
     auto& column = message.columns()[i];
     const ColumnConfig* config = data_row_config_[i];
@@ -71,12 +73,18 @@ void EncryptionMutator::mutateDataRow(DataRowMessage& message) {
                                            encrypted_column.size());
     encrypted_hex_string.remove_prefix(2); // 0x
     auto encrypted_raw_data = absl::HexStringToBytes(encrypted_hex_string);
-    auto decrypted_data = crypto_util_ext.AESDecrypt(
-        config->encryptionKey(),
-        absl::string_view(encrypted_raw_data.data(), encrypted_raw_data.size()));
+    std::vector<uint8_t> decrypted_data;
+    Result result = crypto_util_ext.AESDecrypt(config->encryptionKey(),
+                                               absl::string_view(encrypted_raw_data.data(), encrypted_raw_data.size()),
+                                               decrypted_data);
+    if (!result.isOk) {
+      return result;
+    }
 
     column = std::make_unique<VarByteN>(std::move(decrypted_data));
   }
+
+  return Result::ok;
 }
 
 Result EncryptionMutator::visitExpression(hsql::Expr* expr) {
@@ -139,8 +147,6 @@ Result EncryptionMutator::visitUpdateStatement(hsql::UpdateStatement* stmt) {
 }
 
 Result EncryptionMutator::mutateInsertStatement() {
-  absl::Cleanup cleanup = [this]() { insert_mutation_candidates_.clear(); };
-
   for (hsql::InsertStatement* stmt : insert_mutation_candidates_) {
     if (stmt->columns->size() != stmt->values->size()) {
       return Result::makeError("postgres_tde: bad INSERT statement");
@@ -169,8 +175,6 @@ Result EncryptionMutator::mutateInsertStatement() {
 }
 
 Result EncryptionMutator::mutateUpdateStatement() {
-  absl::Cleanup cleanup = [this]() { update_mutation_candidates_.clear(); };
-
   for (hsql::UpdateStatement* stmt : update_mutation_candidates_) {
     for (hsql::UpdateClause* update : *stmt->updates) {
       ColumnConfig* column_config = config_->getColumnConfig(stmt->table->name, update->column);
@@ -228,8 +232,10 @@ hsql::Expr* EncryptionMutator::createEncryptedLiteral(hsql::Expr* orig_literal,
 
 std::string EncryptionMutator::generateCryptoString(absl::string_view data,
                                                     ColumnConfig* column_config) {
-  auto& crypto_util_ext = Envoy::Common::Crypto::UtilityExtSingleton::get();
-  auto encrypted_data = crypto_util_ext.AESEncrypt(column_config->encryptionKey(), data);
+  auto& crypto_util_ext = Common::Crypto::UtilityExtSingleton::get();
+  std::vector<uint8_t> encrypted_data;
+  Result result = crypto_util_ext.AESEncrypt(column_config->encryptionKey(), data, encrypted_data);
+  ASSERT(result.isOk);
 
   std::string encrypted_data_hex_str = std::string("\\x");
   encrypted_data_hex_str.append(absl::BytesToHexString(absl::string_view(

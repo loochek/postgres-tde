@@ -25,6 +25,7 @@ envoy_cc_library(
         "@envoy//source/common/common:assert_lib",
         "@envoy//source/common/singleton:threadsafe_singleton",
         "@envoy//source/common/crypto:utility_lib",
+        "//postgres_tde/source/common/utils:utils_lib",
     ],
     # for the singleton
     alwayslink = 1,

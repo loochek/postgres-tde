@@ -45,6 +45,8 @@ Result Visitor::visitExpression(hsql::Expr* expr) {
   case hsql::kExprLiteralInt:
   case hsql::kExprLiteralNull:
   case hsql::kExprStar:
+    return Result::ok;
+
   case hsql::kExprColumnRef: {
     if (in_select_body_) {
       if (expr->table == nullptr) {
@@ -59,12 +61,6 @@ Result Visitor::visitExpression(hsql::Expr* expr) {
 
       column_aliases_[fmt::format("{}.{}", expr->table, expr->name)] = column;
       ENVOY_LOG(error, "possible column alias: {}.{} -> ({}, {})", expr->table, expr->name, column.first, column.second);
-
-      if (!from_tables_.empty() && (table_name == from_tables_[0])) {
-        // Allow direct reference to the primary (i.e. non-joined) table
-        column_aliases_[expr->name] = column;
-        ENVOY_LOG(error, "possible column alias: {} -> ({}, {})", expr->name, column.first, column.second);
-      }
 
       if (expr->alias != nullptr) {
         column_aliases_[expr->alias] = column;
@@ -233,6 +229,11 @@ Result Visitor::visitInsertStatement(hsql::InsertStatement* stmt) {
 Result Visitor::visitUpdateStatement(hsql::UpdateStatement* stmt) {
   assert(stmt->table->type == hsql::kTableName);
 
+  if (stmt->table->alias != nullptr) {
+    ENVOY_LOG(error, "table alias: {} -> {}", stmt->table->alias->name, stmt->table->name);
+    table_aliases_[std::string(stmt->table->alias->name)] = std::string(stmt->table->name);
+  }
+
   for (hsql::UpdateClause* update : *stmt->updates) {
     CHECK_RESULT(visitExpression(update->value));
   }
@@ -257,9 +258,15 @@ const std::string& Visitor::getTableNameByAlias(const std::string& alias) const 
   return table_aliases_.at(alias);
 }
 
-const ColumnRef* Visitor::getColumnByAlias(const std::string& alias) const {
+const ColumnRef* Visitor::getColumnByAlias(const std::string& alias) {
   if (column_aliases_.find(alias) == column_aliases_.end()) {
-    return nullptr;
+    if (from_tables_.empty()) {
+      return nullptr;
+    }
+
+    // Allow direct access to the primary table from the FROM clause
+    column_aliases_[alias] = ColumnRef(from_tables_[0], alias);
+    return getColumnByAlias(alias);
   }
 
   return &column_aliases_.at(alias);

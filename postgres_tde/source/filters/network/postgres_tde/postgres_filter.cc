@@ -37,28 +37,34 @@ Network::FilterStatus PostgresFilter::onData(Buffer::Instance& data, bool) {
   ENVOY_CONN_LOG(trace, "postgres_proxy: got {} bytes", read_callbacks_->connection(),
                  data.length());
 
-//  auto kek = data.linearize(data.length());
-//  ENVOY_LOG(error, "orig data: {}", absl::BytesToHexString(absl::string_view(reinterpret_cast<const char*>(kek), data.length())));
   frontend_validation_buffer_.add(data);
   data.drain(data.length());
 
+  Buffer::Instance& frontend_data = decoder_->getFrontendReplacementData();
+  Buffer::Instance& backend_data = decoder_->getBackendReplacementData();
+
   Decoder::Result result = doDecode(frontend_validation_buffer_, true);
-  Buffer::Instance& replacement_data = decoder_->getReplacementData();
   switch (result) {
   case Decoder::Result::NeedMoreData:
   case Decoder::Result::ReadyForNext:
-    if (replacement_data.length() > 0) {
+    if (backend_data.length() > 0) {
+      // Write back if needed
+      data.move(backend_data, backend_data.length());
+      write_callbacks_->injectWriteDataToFilterChain(data, false);
+      ASSERT(data.length() == 0);
+    }
+
+    if (frontend_data.length() > 0) {
       // Pass mutated data to the rest of the filter chain and continue
-      data.move(replacement_data, replacement_data.length());
-//      auto kek2 = data.linearize(data.length());
-//      ENVOY_LOG(error, "mted data: {}", absl::BytesToHexString(absl::string_view(reinterpret_cast<const char*>(kek2), data.length())));
+      data.move(frontend_data, frontend_data.length());
       read_callbacks_->continueReading();
     }
+
     return Network::FilterStatus::StopIteration;
 
   case Decoder::Result::Stopped:
     ASSERT(frontend_validation_buffer_.length() == 0);
-    replacement_data.drain(replacement_data.length());
+    frontend_data.drain(frontend_data.length());
     return Network::FilterStatus::StopIteration;
   }
 }
@@ -75,28 +81,30 @@ void PostgresFilter::initializeWriteFilterCallbacks(Network::WriteFilterCallback
 
 // Network::WriteFilter
 Network::FilterStatus PostgresFilter::onWrite(Buffer::Instance& data, bool end_stream) {
-//  auto kek = data.linearize(data.length());
-//  ENVOY_LOG(error, "orig data: {}", absl::BytesToHexString(absl::string_view(reinterpret_cast<const char*>(kek), data.length())));
   backend_validation_buffer_.add(data);
   data.drain(data.length());
 
+  Buffer::Instance& frontend_data = decoder_->getFrontendReplacementData();
+  Buffer::Instance& backend_data = decoder_->getBackendReplacementData();
+
   Decoder::Result result = doDecode(backend_validation_buffer_, false);
-  Buffer::Instance& replacement_data = decoder_->getReplacementData();
   switch (result) {
   case Decoder::Result::NeedMoreData:
   case Decoder::Result::ReadyForNext:
-    if (replacement_data.length() > 0) {
+    // Write back is not supported
+    ASSERT(frontend_data.length() == 0);
+
+    if (backend_data.length() > 0) {
       // Pass mutated data to the rest of the filter chain and continue
-      data.move(replacement_data, replacement_data.length());
-//      auto kek2 = data.linearize(data.length());
-//      ENVOY_LOG(error, "mted data: {}", absl::BytesToHexString(absl::string_view(reinterpret_cast<const char*>(kek2), data.length())));
+      data.move(backend_data, backend_data.length());
       write_callbacks_->injectWriteDataToFilterChain(data, end_stream);
     }
+
     return Network::FilterStatus::StopIteration;
 
   case Decoder::Result::Stopped:
     ASSERT(backend_validation_buffer_.length() == 0);
-    replacement_data.drain(replacement_data.length());
+    backend_data.drain(backend_data.length());
     return Network::FilterStatus::StopIteration;
   }
 }
@@ -106,45 +114,35 @@ DecoderPtr PostgresFilter::createDecoder(DecoderCallbacks* callbacks) {
 }
 
 MutationManagerPtr PostgresFilter::createMutationManager() {
-  return std::make_unique<MutationManagerImpl>();
+  return std::make_unique<MutationManagerImpl>(decoder_.get());
 }
 
-bool PostgresFilter::processQuery(QueryMessage& message) {
-  Result result = mutation_manager_->processQuery(message);
-  if (result.isOk) {
-    return true;
-  } else {
-    Buffer::OwnedImpl injectBuffer;
-    createErrorResponseMessage(result.error).write(injectBuffer);
-    READY_FOR_QUERY_MESSAGE.write(injectBuffer);
-    write_callbacks_->injectWriteDataToFilterChain(injectBuffer, false);
-    return false;
-  }
+void PostgresFilter::processQuery(std::unique_ptr<QueryMessage>& message) {
+  mutation_manager_->processQuery(message);
 }
 
-bool PostgresFilter::processParse(ParseMessage&) {
-  Buffer::OwnedImpl injectBuffer;
-  createErrorResponseMessage("postgres_tde: prepared statements are not supported").write(injectBuffer);
-  write_callbacks_->injectWriteDataToFilterChain(injectBuffer, false);
-  return false;
+void PostgresFilter::processParse(std::unique_ptr<ParseMessage>& message) {
+  mutation_manager_->processParse(message);
 }
 
-void PostgresFilter::processRowDescription(RowDescriptionMessage & replace_message) {
-  mutation_manager_->processRowDescription(replace_message);
+void PostgresFilter::processRowDescription(std::unique_ptr<RowDescriptionMessage>& message) {
+  mutation_manager_->processRowDescription(message);
 }
 
-void PostgresFilter::processDataRow(DataRowMessage& replace_message) {
-  mutation_manager_->processDataRow(replace_message);
+void PostgresFilter::processDataRow(std::unique_ptr<DataRowMessage>& message) {
+  mutation_manager_->processDataRow(message);
 }
 
-void PostgresFilter::processCommandComplete(CommandCompleteMessage& replace_message) {
-  mutation_manager_->processCommandComplete(replace_message);
+void PostgresFilter::processCommandComplete(std::unique_ptr<CommandCompleteMessage>& message) {
+  mutation_manager_->processCommandComplete(message);
 }
 
-void PostgresFilter::processEmptyQueryResponse() { mutation_manager_->processEmptyQueryResponse(); }
+void PostgresFilter::processEmptyQueryResponse(std::unique_ptr<EmptyQueryResponseMessage>& message) {
+  mutation_manager_->processEmptyQueryResponse(message);
+}
 
-void PostgresFilter::processErrorResponse(ErrorResponseMessage& replace_message) {
-  mutation_manager_->processErrorResponse(replace_message);
+void PostgresFilter::processErrorResponse(std::unique_ptr<ErrorResponseMessage>& message) {
+  mutation_manager_->processErrorResponse(message);
 }
 
 bool PostgresFilter::onSSLRequest() {
