@@ -205,6 +205,9 @@ public:
     return *value_;
   }
 
+  bool operator==(const VarByteN& other) const;
+  bool operator!=(const VarByteN& other) const;
+
 private:
   std::optional<std::vector<uint8_t>> value_;
 };

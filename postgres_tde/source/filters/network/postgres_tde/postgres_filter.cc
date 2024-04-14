@@ -21,7 +21,8 @@ PostgresFilterConfig::PostgresFilterConfig(const PostgresFilterConfigOptions& co
                                            Stats::Scope& scope)
     : enable_sql_parsing_(config_options.enable_sql_parsing_),
       terminate_ssl_(config_options.terminate_ssl_), upstream_ssl_(config_options.upstream_ssl_),
-      scope_{scope}, stats_{generateStats(config_options.stats_prefix_, scope)} {}
+      permissive_parsing_(config_options.permissive_parsing_), scope_{scope},
+      stats_{generateStats(config_options.stats_prefix_, scope)} {}
 
 PostgresFilter::PostgresFilter(PostgresFilterConfigSharedPtr config) : config_{config} {
   if (!decoder_) {
@@ -114,7 +115,7 @@ DecoderPtr PostgresFilter::createDecoder(DecoderCallbacks* callbacks) {
 }
 
 MutationManagerPtr PostgresFilter::createMutationManager() {
-  return std::make_unique<MutationManagerImpl>(decoder_.get());
+  return std::make_unique<MutationManagerImpl>(config_, decoder_.get());
 }
 
 void PostgresFilter::processQuery(std::unique_ptr<QueryMessage>& message) {

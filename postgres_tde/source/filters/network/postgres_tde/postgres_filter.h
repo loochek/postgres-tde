@@ -73,6 +73,7 @@ public:
     bool terminate_ssl_;
     envoy::extensions::filters::network::postgres_tde::PostgresTDE::SSLMode
         upstream_ssl_;
+    bool permissive_parsing_;
   };
   PostgresFilterConfig(const PostgresFilterConfigOptions& config_options, Stats::Scope& scope);
 
@@ -81,6 +82,7 @@ public:
   envoy::extensions::filters::network::postgres_tde::PostgresTDE::SSLMode
       upstream_ssl_{
           envoy::extensions::filters::network::postgres_tde::PostgresTDE::DISABLE};
+  bool permissive_parsing_{false};
   Stats::Scope& scope_;
   PostgresProxyStats stats_;
 

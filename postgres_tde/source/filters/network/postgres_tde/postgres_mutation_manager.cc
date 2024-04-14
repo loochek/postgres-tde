@@ -1,18 +1,23 @@
 #include "postgres_tde/source/filters/network/postgres_tde/postgres_mutation_manager.h"
 #include "postgres_tde/source/filters/network/postgres_tde/mutators/blind_index.h"
+#include "postgres_tde/source/filters/network/postgres_tde/mutators/probabilistic_join.h"
 #include "postgres_tde/source/filters/network/postgres_tde/mutators/encryption.h"
+#include "postgres_tde/source/filters/network/postgres_tde/postgres_filter.h"
 
 namespace Envoy {
 namespace Extensions {
 namespace NetworkFilters {
 namespace PostgresTDE {
 
-MutationManagerImpl::MutationManagerImpl(MutationManagerCallbacks* callbacks)
+MutationManagerImpl::MutationManagerImpl(PostgresFilterConfigSharedPtr config,
+                                         MutationManagerCallbacks* callbacks)
     : error_state_(Result::ok),
+      config_(std::move(config)),
       callbacks_(callbacks) {
   // Order is important
-  mutator_chain_.push_back(std::make_unique<BlindIndexMutator>(&config_));
-  mutator_chain_.push_back(std::make_unique<EncryptionMutator>(&config_));
+  mutator_chain_.push_back(std::make_unique<BlindIndexMutator>(this));
+  mutator_chain_.push_back(std::make_unique<ProbabilisticJoinMutator>(this));
+  mutator_chain_.push_back(std::make_unique<EncryptionMutator>(this));
 
   dumper_ = std::make_unique<Common::SQLUtils::DumpVisitor>();
 }
@@ -20,6 +25,8 @@ MutationManagerImpl::MutationManagerImpl(MutationManagerCallbacks* callbacks)
 void PostgresTDE::MutationManagerImpl::processQuery(std::unique_ptr<QueryMessage>& message) {
   ENVOY_LOG(error, "MutationManagerImpl::processQuery - got {}", message->toString());
   ASSERT(error_state_.isOk);
+
+  retent_rows_.clear();
 
   Result result = processQueryImpl(*message);
   if (!result.isOk) {
@@ -49,7 +56,7 @@ void MutationManagerImpl::processRowDescription(std::unique_ptr<RowDescriptionMe
   }
 
   ENVOY_LOG(error, "MutationManagerImpl::processRowDescription - after {}", message->toString());
-  retent_response_.push_back(std::move(message));
+  retent_row_description_ = std::move(message);
 }
 
 void MutationManagerImpl::processDataRow(std::unique_ptr<DataRowMessage>& message) {
@@ -62,32 +69,38 @@ void MutationManagerImpl::processDataRow(std::unique_ptr<DataRowMessage>& messag
   }
 
   for (auto it = mutator_chain_.rbegin(); it != mutator_chain_.rend(); it++) {
-    error_state_ = (*it)->mutateDataRow(*message);
+    error_state_ = (*it)->mutateDataRow(message);
     if (!error_state_.isOk) {
-      ENVOY_LOG(warn, "got error while processing DataRow, result will be discarded: {}", error_state_.error);
+      ENVOY_LOG(warn, "got error while processing DataRow, result will be discarded: {}",
+                error_state_.error);
       message.reset();
+      return;
+    } else if (!message) {
+      // Message was discarded by filter
       return;
     }
   }
 
-  retent_response_.push_back(std::move(message));
+  retent_rows_.push_back(std::move(message));
 }
 
-void MutationManagerImpl::processCommandComplete(std::unique_ptr<CommandCompleteMessage>& message) {
-  ENVOY_LOG(error, "MutationManagerImpl::processCommandComplete - got {}", message->toString());
+void MutationManagerImpl::processCommandComplete(std::unique_ptr<CommandCompleteMessage>& cc_message) {
+  ENVOY_LOG(error, "MutationManagerImpl::processCommandComplete - got {}", cc_message->toString());
 
   if (error_state_.isOk) {
     // Emit renent response
-    for (MessagePtr& retent_message: retent_response_) {
-      callbacks_->emitBackendMessage(std::move(retent_message));
+    if (retent_row_description_) {
+      callbacks_->emitBackendMessage(std::move(retent_row_description_));
     }
 
-    callbacks_->emitBackendMessage(std::move(message));
+    for (auto& row: retent_rows_) {
+      callbacks_->emitBackendMessage(std::move(row));
+    }
+
+    callbacks_->emitBackendMessage(std::move(cc_message));
   } else {
     emitErrorResponse(error_state_);
   }
-
-  retent_response_.clear();
 }
 
 void MutationManagerImpl::processEmptyQueryResponse(std::unique_ptr<EmptyQueryResponseMessage>&) {
@@ -110,10 +123,13 @@ Result PostgresTDE::MutationManagerImpl::processQueryImpl(QueryMessage& message)
   hsql::SQLParserResult parsed_query;
   hsql::SQLParser::parse(query_str, &parsed_query);
   if (!parsed_query.isValid()) {
-// TODO: ???
-//    // Pass incorrect queries to the backend in order to get a detailed error message
-//    ENVOY_LOG(warn, "query passed through because of parse error");
-    return Result::makeError("postgres_tde: unable to parse query");
+    if (config_->permissive_parsing_) {
+      // Pass incorrect queries to the backend in order to get a detailed error message
+      ENVOY_LOG(warn, "query passed through because of parse error");
+      return Result::ok;
+    } else {
+      return Result::makeError("postgres_tde: unable to parse query");
+    }
   }
 
   for (MutatorPtr& mutator : mutator_chain_) {

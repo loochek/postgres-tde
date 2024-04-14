@@ -10,6 +10,8 @@
 #include "absl/strings/escaping.h"
 
 #include "openssl/rand.h"
+#include "openssl/evp.h"
+#include "openssl/sha.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -27,8 +29,7 @@ std::vector<uint8_t> UtilityExtImpl::GenerateAESKey() {
   return key;
 }
 
-Result UtilityExtImpl::AESEncrypt(const std::vector<uint8_t>& key, absl::string_view plain_data,
-                                  std::vector<uint8_t>& out) {
+std::vector<uint8_t> UtilityExtImpl::AESEncrypt(const std::vector<uint8_t>& key, absl::string_view plain_data) {
   ASSERT(key.size() == AES_256_KEY_LENGTH);
 
   const EVP_CIPHER* cipher = EVP_aes_256_cbc();
@@ -36,14 +37,10 @@ Result UtilityExtImpl::AESEncrypt(const std::vector<uint8_t>& key, absl::string_
 
   std::vector<uint8_t> iv(AES_CBC_IV_LENGTH);
   int ok = RAND_bytes(iv.data(), EVP_CIPHER_iv_length(cipher));
-  if (ok != 1) {
-    return Result::makeError("postgres_tde: encryption failed");
-  }
+  RELEASE_ASSERT(ok == 1, "encryption failed");
 
   ok = EVP_EncryptInit_ex(ctx.get(), cipher, NULL, key.data(), iv.data());
-  if (ok != 1) {
-    return Result::makeError("postgres_tde: encryption failed");
-  }
+  RELEASE_ASSERT(ok == 1, "encryption failed");
 
   int max_encrypted_data_size = Utils::max_ciphertext_size(plain_data.size(), EVP_CIPHER_block_size(cipher));
   std::vector<uint8_t> encrypted_data(max_encrypted_data_size);
@@ -52,16 +49,12 @@ Result UtilityExtImpl::AESEncrypt(const std::vector<uint8_t>& key, absl::string_
   int size = 0;
   ok = EVP_EncryptUpdate(ctx.get(), const_cast<uint8_t*>(encrypted_data.data()), &size,
                          reinterpret_cast<const uint8_t*>(plain_data.data()), plain_data.size());
-  if (ok != 1) {
-    return Result::makeError("postgres_tde: encryption failed");
-  }
+  RELEASE_ASSERT(ok == 1, "encryption failed");
   encrypted_data_size = size;
 
   ok = EVP_EncryptFinal_ex(ctx.get(),
                            const_cast<uint8_t*>(encrypted_data.data()) + encrypted_data_size, &size);
-  if (ok != 1) {
-    return Result::makeError("postgres_tde: encryption failed");
-  }
+  RELEASE_ASSERT(ok == 1, "encryption failed");
   encrypted_data_size += size;
 
   ASSERT(encrypted_data_size <= max_encrypted_data_size);
@@ -70,8 +63,7 @@ Result UtilityExtImpl::AESEncrypt(const std::vector<uint8_t>& key, absl::string_
   std::vector<uint8_t> result(std::move(iv));
   result.insert(result.end(), encrypted_data.begin(), encrypted_data.end());
 
-  out = std::move(result);
-  return Result::ok;
+  return result;
 }
 
 Result UtilityExtImpl::AESDecrypt(const std::vector<uint8_t>& key, absl::string_view cipher_data,
@@ -118,6 +110,22 @@ Result UtilityExtImpl::AESDecrypt(const std::vector<uint8_t>& key, absl::string_
   plain_data.resize(plain_data_size);
   out = std::move(plain_data);
   return Result::ok;
+}
+
+std::vector<uint8_t> UtilityExtImpl::getSha256Digest(absl::string_view data) {
+  std::vector<uint8_t> digest(SHA256_DIGEST_LENGTH);
+  bssl::ScopedEVP_MD_CTX ctx;
+
+  int ok = EVP_DigestInit(ctx.get(), EVP_sha256());
+  RELEASE_ASSERT(ok == 1, "Failed to init digest context");
+
+  ok = EVP_DigestUpdate(ctx.get(), data.data(), data.size());
+  RELEASE_ASSERT(ok == 1, "Failed to update digest");
+
+  ok = EVP_DigestFinal(ctx.get(), digest.data(), nullptr);
+  RELEASE_ASSERT(ok == 1, "Failed to finalize digest");
+
+  return digest;
 }
 
 // Register the crypto utility singleton.

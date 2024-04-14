@@ -1,4 +1,5 @@
 #include "postgres_tde/source/filters/network/postgres_tde/mutators/encryption.h"
+#include "postgres_tde/source/filters/network/postgres_tde/postgres_mutation_manager.h"
 #include "postgres_tde/source/common/crypto/utility_ext.h"
 #include "source/common/common/fmt.h"
 #include "absl/strings/escaping.h"
@@ -9,8 +10,7 @@ namespace Extensions {
 namespace NetworkFilters {
 namespace PostgresTDE {
 
-EncryptionMutator::EncryptionMutator(DatabaseEncryptionConfig* config) : config_(config) {
-}
+EncryptionMutator::EncryptionMutator(MutationManager* manager) : BaseMutator(manager) {}
 
 Result EncryptionMutator::mutateQuery(hsql::SQLParserResult& query) {
   insert_mutation_candidates_.clear();
@@ -25,19 +25,29 @@ Result EncryptionMutator::mutateQuery(hsql::SQLParserResult& query) {
 
 Result EncryptionMutator::mutateRowDescription(RowDescriptionMessage& message) {
   data_row_config_.clear();
-  for (auto& column : message.column_descriptions()) {
-    auto column_ref = getColumnByAlias(column->name());
-    if (column_ref == nullptr) {
 
+  std::unordered_set<std::string> column_names;
+  for (auto& column : message.column_descriptions()) {
+    if (column_names.find(column->name()) != column_names.end()) {
+      return Result::makeError(fmt::format("postgres_tde: detected ambiguous column name {}. "
+                                           "Please specify a different alias for each column",
+                                           column->name()));
+    }
+
+    column_names.insert(column->name());
+
+    auto column_ref = getSelectColumnByAlias(column->name());
+    if (column_ref == nullptr) {
       data_row_config_.push_back(nullptr);
       continue;
     }
 
-    const ColumnConfig* config =
-        config_->getColumnConfig(column_ref->table(), column_ref->column());
-    data_row_config_.push_back(config_->getColumnConfig(column_ref->table(), column_ref->column()));
+    auto column_config =
+        mgr_->getEncryptionConfig()->getColumnConfig(column_ref->table(), column_ref->column());
+    data_row_config_.push_back(
+        mgr_->getEncryptionConfig()->getColumnConfig(column_ref->table(), column_ref->column()));
 
-    if (config != nullptr && config->isEncrypted()) {
+    if (column_config != nullptr && column_config->isEncrypted()) {
       ENVOY_LOG(error, "matched encrypted column: {} -> ({}, {})", column->name(),
                 column_ref->table(), column_ref->column());
 
@@ -45,21 +55,21 @@ Result EncryptionMutator::mutateRowDescription(RowDescriptionMessage& message) {
       ASSERT(column->formatCode() == 0);
 
       // Replace data type OID and size
-      column->dataType() = config->origDataType();
-      column->dataSize() = config->origDataSize();
+      column->dataType() = column_config->origDataType();
+      column->dataSize() = column_config->origDataSize();
     }
   }
 
   return Result::ok;
 }
 
-Result EncryptionMutator::mutateDataRow(DataRowMessage& message) {
-  ASSERT(message.columns().size() == data_row_config_.size());
-  size_t columns_count = message.columns().size();
+Result EncryptionMutator::mutateDataRow(std::unique_ptr<DataRowMessage>& message) {
+  ASSERT(message->columns().size() == data_row_config_.size());
+  size_t columns_count = message->columns().size();
 
   auto& crypto_util_ext = Common::Crypto::UtilityExtSingleton::get();
   for (size_t i = 0; i < columns_count; i++) {
-    auto& column = message.columns()[i];
+    auto& column = message->columns()[i];
     const ColumnConfig* config = data_row_config_[i];
 
     if (config == nullptr || !config->isEncrypted() || column->is_null()) {
@@ -74,9 +84,9 @@ Result EncryptionMutator::mutateDataRow(DataRowMessage& message) {
     encrypted_hex_string.remove_prefix(2); // 0x
     auto encrypted_raw_data = absl::HexStringToBytes(encrypted_hex_string);
     std::vector<uint8_t> decrypted_data;
-    Result result = crypto_util_ext.AESDecrypt(config->encryptionKey(),
-                                               absl::string_view(encrypted_raw_data.data(), encrypted_raw_data.size()),
-                                               decrypted_data);
+    Result result = crypto_util_ext.AESDecrypt(
+        config->encryptionKey(),
+        absl::string_view(encrypted_raw_data.data(), encrypted_raw_data.size()), decrypted_data);
     if (!result.isOk) {
       return result;
     }
@@ -104,7 +114,7 @@ Result EncryptionMutator::visitExpression(hsql::Expr* expr) {
     }
 
     const std::string& table_name = getTableNameByAlias(expr->table);
-    ColumnConfig* column_config = config_->getColumnConfig(table_name, expr->name);
+    auto column_config = mgr_->getEncryptionConfig()->getColumnConfig(table_name, expr->name);
     if (column_config != nullptr && column_config->isEncrypted()) {
       return Result::makeError(fmt::format("postgres_tde: invalid use of encrypted column {}.{}",
                                            table_name, expr->name));
@@ -117,35 +127,6 @@ Result EncryptionMutator::visitExpression(hsql::Expr* expr) {
   }
 }
 
-Result EncryptionMutator::visitInsertStatement(hsql::InsertStatement* stmt) {
-  switch (stmt->type) {
-  case hsql::kInsertValues: {
-    if (stmt->columns == nullptr && config_->hasTDEEnabled(stmt->tableName)) {
-      return Result::makeError(
-          "postgres_tde: columns definition for INSERT is required for TDE-enabled tables");
-    }
-
-    insert_mutation_candidates_.push_back(stmt);
-    return Visitor::visitInsertStatement(stmt);
-  }
-  case hsql::kInsertSelect:
-    if (config_->hasTDEEnabled(stmt->tableName)) {
-      return Result::makeError(
-          "postgres_tde: INSERT INTO SELECT is not supported for TDE-enabled tables");
-    }
-
-    return Visitor::visitInsertStatement(stmt);
-  default:
-    assert(false);
-  }
-}
-
-Result EncryptionMutator::visitUpdateStatement(hsql::UpdateStatement* stmt) {
-  CHECK_RESULT(Visitor::visitUpdateStatement(stmt));
-  update_mutation_candidates_.push_back(stmt);
-  return Result::ok;
-}
-
 Result EncryptionMutator::mutateInsertStatement() {
   for (hsql::InsertStatement* stmt : insert_mutation_candidates_) {
     if (stmt->columns->size() != stmt->values->size()) {
@@ -156,7 +137,7 @@ Result EncryptionMutator::mutateInsertStatement() {
       char* column = (*stmt->columns)[i];
       hsql::Expr* value = (*stmt->values)[i];
 
-      ColumnConfig* column_config = config_->getColumnConfig(stmt->tableName, column);
+      auto column_config = mgr_->getEncryptionConfig()->getColumnConfig(stmt->tableName, column);
       if (column_config == nullptr || !column_config->isEncrypted()) {
         continue;
       }
@@ -177,7 +158,8 @@ Result EncryptionMutator::mutateInsertStatement() {
 Result EncryptionMutator::mutateUpdateStatement() {
   for (hsql::UpdateStatement* stmt : update_mutation_candidates_) {
     for (hsql::UpdateClause* update : *stmt->updates) {
-      ColumnConfig* column_config = config_->getColumnConfig(stmt->table->name, update->column);
+      auto column_config =
+          mgr_->getEncryptionConfig()->getColumnConfig(stmt->table->name, update->column);
       if (column_config == nullptr || !column_config->isEncrypted()) {
         continue;
       }
@@ -197,8 +179,8 @@ Result EncryptionMutator::mutateUpdateStatement() {
 }
 
 hsql::Expr* EncryptionMutator::createEncryptedLiteral(hsql::Expr* orig_literal,
-                                                      ColumnConfig* column_config) {
-  assert(orig_literal->isLiteral());
+                                                      const ColumnConfig* column_config) {
+  ASSERT(orig_literal->isLiteral());
 
   switch (orig_literal->type) {
   case hsql::kExprLiteralNull:
@@ -226,16 +208,15 @@ hsql::Expr* EncryptionMutator::createEncryptedLiteral(hsql::Expr* orig_literal,
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(encrypted_hex_str));
   }
   default:
-    assert(false);
+    ASSERT(false);
   }
 }
 
 std::string EncryptionMutator::generateCryptoString(absl::string_view data,
-                                                    ColumnConfig* column_config) {
+                                                    const ColumnConfig* column_config) {
   auto& crypto_util_ext = Common::Crypto::UtilityExtSingleton::get();
-  std::vector<uint8_t> encrypted_data;
-  Result result = crypto_util_ext.AESEncrypt(column_config->encryptionKey(), data, encrypted_data);
-  ASSERT(result.isOk);
+
+  auto encrypted_data = crypto_util_ext.AESEncrypt(column_config->encryptionKey(), data);
 
   std::string encrypted_data_hex_str = std::string("\\x");
   encrypted_data_hex_str.append(absl::BytesToHexString(absl::string_view(

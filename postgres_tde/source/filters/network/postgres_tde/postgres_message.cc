@@ -155,6 +155,18 @@ Message::ValidationResult VarByteN::validate(const Buffer::Instance& data, const
   return Message::ValidationOK;
 }
 
+bool VarByteN::operator==(const VarByteN& other) const {
+  if (this == &other) {
+    return true;
+  }
+
+  return value_ == other.value_;
+}
+
+bool VarByteN::operator!=(const VarByteN& other) const {
+  return !(*this == other);
+}
+
 } // namespace PostgresTDE
 } // namespace NetworkFilters
 } // namespace Extensions

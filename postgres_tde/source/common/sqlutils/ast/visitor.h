@@ -50,7 +50,8 @@ protected:
   virtual Result visitDeleteStatement(hsql::DeleteStatement* stmt);
 
   const std::string& getTableNameByAlias(const std::string& alias) const;
-  const ColumnRef* getColumnByAlias(const std::string& alias);
+  const ColumnRef* getSelectColumnByAlias(const std::string& alias) const;
+  bool isColumnSelected(const ColumnRef& column) const;
 
 protected:
   bool in_select_body_{false};
@@ -58,9 +59,8 @@ protected:
   bool in_group_by_{false};
 
   std::unordered_map<std::string, std::string> table_aliases_;
-  std::unordered_map<std::string, ColumnRef> column_aliases_;
-
-  std::vector<std::string> from_tables_;
+  std::set<ColumnRef> select_columns_;
+  std::unordered_map<std::string, const ColumnRef*> select_column_aliases_;
 };
 
 using VisitorPtr = std::unique_ptr<Visitor>;

@@ -25,8 +25,11 @@ public:
   virtual ~UtilityExt() = default;
 
   virtual std::vector<uint8_t> GenerateAESKey() PURE;
-  virtual Result AESEncrypt(const std::vector<uint8_t>& key, absl::string_view plain_data, std::vector<uint8_t>& out) PURE;
+
+  virtual std::vector<uint8_t> AESEncrypt(const std::vector<uint8_t>& key, absl::string_view plain_data) PURE;
   virtual Result AESDecrypt(const std::vector<uint8_t>& key, absl::string_view encrypted_data, std::vector<uint8_t>& out) PURE;
+
+  virtual std::vector<uint8_t> getSha256Digest(absl::string_view data) PURE;
 };
 
 using UtilityExtSingleton = InjectableSingleton<UtilityExt>;

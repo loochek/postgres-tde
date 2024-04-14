@@ -1,5 +1,6 @@
 #include "postgres_tde/source/common/sqlutils/ast/visitor.h"
 #include "absl/cleanup/cleanup.h"
+#include "source/common/common/assert.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -8,10 +9,10 @@ namespace SQLUtils {
 
 Result Visitor::visitQuery(hsql::SQLParserResult& query) {
   table_aliases_.clear();
-  column_aliases_.clear();
-  from_tables_.clear();
+  select_columns_.clear();
+  select_column_aliases_.clear();
 
-  for (hsql::SQLStatement *stmt : query.getStatements()) {
+  for (hsql::SQLStatement* stmt : query.getStatements()) {
     CHECK_RESULT(visitStatement(stmt));
   }
 
@@ -30,7 +31,7 @@ Result Visitor::visitStatement(hsql::SQLStatement* stmt) {
     return visitDeleteStatement(dynamic_cast<hsql::DeleteStatement*>(stmt));
   default:
     // TODO: DDL statements
-    assert(false);
+    ASSERT(false);
   }
 }
 
@@ -51,27 +52,40 @@ Result Visitor::visitExpression(hsql::Expr* expr) {
     if (in_select_body_) {
       if (expr->table == nullptr) {
         return Result::makeError(
-            fmt::format("postgres_tde: unable to determine the source of column {}. Please specify an explicit table/alias reference", expr->name));
+            fmt::format("postgres_tde: unable to determine the source of column {}. Please specify "
+                        "an explicit table/alias reference",
+                        expr->name));
       }
 
       // Save possible aliases to this column
 
       auto& table_name = getTableNameByAlias(expr->table);
-      auto column = ColumnRef(table_name, expr->name);
-
-      column_aliases_[fmt::format("{}.{}", expr->table, expr->name)] = column;
-      ENVOY_LOG(error, "possible column alias: {}.{} -> ({}, {})", expr->table, expr->name, column.first, column.second);
+      auto [column, _] = select_columns_.insert(ColumnRef(table_name, expr->name));
 
       if (expr->alias != nullptr) {
-        column_aliases_[expr->alias] = column;
-        ENVOY_LOG(error, "possible column alias: {} -> ({}, {})", expr->alias, column.first, column.second);
+        // Save actual alias if present
+        select_column_aliases_[expr->alias] = &(*column);
+        ENVOY_LOG(error, "select column alias: {} -> ({}, {})", expr->alias, column->first, column->second);
+      } else {
+        // Basically we just should associate column name with that column,
+        // but multiple columns with the same name can appear in RowDescription as the result of join.
+        // It can't be dealt in easy way, so we just ban it
+        if (select_column_aliases_.find(expr->name) != select_column_aliases_.end() &&
+            *select_column_aliases_.at(expr->name) != *column) {
+          return Result::makeError(
+              fmt::format("postgres_tde: detected ambiguous column name {}. Please specify a different alias for each column",
+                          expr->name));
+        }
+
+        select_column_aliases_[expr->name] = &(*column);
+        ENVOY_LOG(error, "select column alias: {} -> ({}, {})", expr->name, column->first, column->second);
       }
     }
 
     return Result::ok;
   }
   default:
-    assert(false);
+    ASSERT(false);
   }
 }
 
@@ -107,14 +121,14 @@ Result Visitor::visitOperatorExpression(hsql::Expr* expr) {
 
   case hsql::kOpIn:
     CHECK_RESULT(visitExpression(expr->expr));
-    for (hsql::Expr *exp: *expr->exprList) {
+    for (hsql::Expr* exp : *expr->exprList) {
       CHECK_RESULT(visitExpression(exp));
     }
 
     return Result::ok;
 
   default:
-    assert(false);
+    ASSERT(false);
   }
 }
 
@@ -129,7 +143,7 @@ Result Visitor::visitSelectStatement(hsql::SelectStatement* stmt) {
   bool in_join_condition_old = in_join_condition_;
   bool in_group_by_old = in_group_by_;
   in_select_body_ = in_join_condition_ = in_group_by_ = false;
-  absl::Cleanup state_flag_restorer = [&, this](){
+  absl::Cleanup state_flag_restorer = [&, this]() {
     in_select_body_ = in_select_body_old;
     in_join_condition_ = in_join_condition_old;
     in_group_by_ = in_group_by_old;
@@ -143,9 +157,9 @@ Result Visitor::visitSelectStatement(hsql::SelectStatement* stmt) {
     CHECK_RESULT(visitTableRef(stmt->fromTable));
   }
 
-  assert(stmt->selectList != nullptr);
+  ASSERT(stmt->selectList != nullptr);
   in_select_body_ = true;
-  for (hsql::Expr *expr : *stmt->selectList) {
+  for (hsql::Expr* expr : *stmt->selectList) {
     CHECK_RESULT(visitExpression(expr));
   }
   in_select_body_ = false;
@@ -184,12 +198,11 @@ Result Visitor::visitTableRef(hsql::TableRef* table_ref) {
       table_aliases_[std::string(table_ref->alias->name)] = std::string(table_ref->name);
     }
 
-    from_tables_.push_back(table_ref->name);
     return Result::ok;
   case hsql::kTableSelect:
     return visitSelectStatement(table_ref->select);
   case hsql::kTableJoin: {
-    hsql::JoinDefinition *def = table_ref->join;
+    hsql::JoinDefinition* def = table_ref->join;
 
     CHECK_RESULT(visitTableRef(def->left));
     CHECK_RESULT(visitTableRef(def->right));
@@ -207,7 +220,7 @@ Result Visitor::visitTableRef(hsql::TableRef* table_ref) {
     }
     return Result::ok;
   default:
-    assert(false);
+    ASSERT(false);
   }
 }
 
@@ -222,12 +235,12 @@ Result Visitor::visitInsertStatement(hsql::InsertStatement* stmt) {
   case hsql::kInsertSelect:
     return visitSelectStatement(stmt->select);
   default:
-    assert(false);
+    ASSERT(false);
   }
 }
 
 Result Visitor::visitUpdateStatement(hsql::UpdateStatement* stmt) {
-  assert(stmt->table->type == hsql::kTableName);
+  ASSERT(stmt->table->type == hsql::kTableName);
 
   if (stmt->table->alias != nullptr) {
     ENVOY_LOG(error, "table alias: {} -> {}", stmt->table->alias->name, stmt->table->name);
@@ -258,18 +271,16 @@ const std::string& Visitor::getTableNameByAlias(const std::string& alias) const 
   return table_aliases_.at(alias);
 }
 
-const ColumnRef* Visitor::getColumnByAlias(const std::string& alias) {
-  if (column_aliases_.find(alias) == column_aliases_.end()) {
-    if (from_tables_.empty()) {
-      return nullptr;
-    }
-
-    // Allow direct access to the primary table from the FROM clause
-    column_aliases_[alias] = ColumnRef(from_tables_[0], alias);
-    return getColumnByAlias(alias);
+const ColumnRef* Visitor::getSelectColumnByAlias(const std::string& alias) const {
+  if (select_column_aliases_.find(alias) == select_column_aliases_.end()) {
+    return nullptr;
   }
 
-  return &column_aliases_.at(alias);
+  return select_column_aliases_.at(alias);
+}
+
+bool Visitor::isColumnSelected(const ColumnRef& column) const {
+  return select_columns_.find(column) != select_columns_.end();
 }
 
 } // namespace SQLUtils

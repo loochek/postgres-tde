@@ -1,4 +1,5 @@
 #include "postgres_tde/source/common/sqlutils/ast/dump_visitor.h"
+#include "source/common/common/assert.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -115,7 +116,7 @@ Result DumpVisitor::visitOperatorExpression(hsql::Expr* expr) {
     return Result::ok;
 
   default:
-    assert(false);
+    ASSERT(false);
   }
 }
 
@@ -126,7 +127,7 @@ Result DumpVisitor::visitSelectStatement(hsql::SelectStatement* stmt) {
 
   query_str_ << "SELECT ";
 
-  assert(stmt->selectList != nullptr);
+  ASSERT(stmt->selectList != nullptr);
   in_select_body_ = true;
   for (size_t i = 0; i < stmt->selectList->size(); i++) {
     CHECK_RESULT(visitExpression((*stmt->selectList)[i]));
@@ -224,7 +225,7 @@ Result DumpVisitor::visitTableRef(hsql::TableRef* table_ref) {
     }
     return Result::ok;
   default:
-    assert(false);
+    ASSERT(false);
   }
 }
 
@@ -255,13 +256,13 @@ Result DumpVisitor::visitInsertStatement(hsql::InsertStatement* stmt) {
     query_str_ << " ";
     return visitSelectStatement(stmt->select);
   default:
-    assert(false);
+    ASSERT(false);
   }
 }
 
 Result DumpVisitor::visitUpdateStatement(hsql::UpdateStatement* stmt) {
-  assert(stmt->table->type == hsql::kTableName);
-  assert(!stmt->updates->empty());
+  ASSERT(stmt->table->type == hsql::kTableName);
+  ASSERT(!stmt->updates->empty());
 
   query_str_ << "UPDATE " << stmt->table->name << " SET ";
 
@@ -285,18 +286,18 @@ Result DumpVisitor::visitUpdateStatement(hsql::UpdateStatement* stmt) {
 const char* DumpVisitor::operatorToString(hsql::OperatorType type) {
   switch (type) {
   case hsql::kOpNone:
-    assert(false);
+    ASSERT(false);
     return "";
   // Ternary operator
   case hsql::kOpBetween:
-    assert(false);
+    ASSERT(false);
     return "";
   // n-nary special case
   case hsql::kOpCase:
-    assert(false);
+    ASSERT(false);
     return "";
   case hsql::kOpCaseListElement: // `WHEN expr THEN expr`
-    assert(false);
+    ASSERT(false);
     return "";
   // Binary operators.
   case hsql::kOpPlus:
@@ -348,7 +349,7 @@ const char* DumpVisitor::operatorToString(hsql::OperatorType type) {
   case hsql::kOpExists:
     return "EXISTS";
   default:
-    assert(false);
+    ASSERT(false);
   }
 }
 
