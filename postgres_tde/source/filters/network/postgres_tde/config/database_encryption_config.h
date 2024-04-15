@@ -13,8 +13,9 @@ class DatabaseEncryptionConfig {
 public:
   virtual ~DatabaseEncryptionConfig() = default;
 
-  virtual ColumnConfig* getColumnConfig(const std::string& table, const std::string& name) PURE;
-  virtual bool hasTDEEnabled(const std::string& table) PURE;
+  virtual const ColumnConfig* getColumnConfig(const std::string& table, const std::string& name) const PURE;
+  virtual bool hasTDEEnabled(const std::string& table) const PURE;
+  virtual size_t join_key_size() const PURE;
 };
 
 using DatabaseEncryptionConfigPtr = std::unique_ptr<DatabaseEncryptionConfig>;

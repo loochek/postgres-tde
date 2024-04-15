@@ -20,14 +20,13 @@ public:
 
   virtual Result mutateQuery(hsql::SQLParserResult&) PURE;
   virtual Result mutateRowDescription(RowDescriptionMessage&) { return Result::ok; }
-  virtual Result mutateDataRow(DataRowMessage&) { return Result::ok; }
-
-  MutationManager* getMutationManager() {
-    return mutation_manager_;
-  }
+  virtual Result mutateDataRow(std::unique_ptr<DataRowMessage>&) { return Result::ok; }
 
 protected:
-  MutationManager* mutation_manager_;
+  explicit Mutator(MutationManager *mgr): mgr_(mgr) {}
+
+protected:
+  MutationManager* mgr_;
 };
 
 using MutatorPtr = std::unique_ptr<Mutator>;

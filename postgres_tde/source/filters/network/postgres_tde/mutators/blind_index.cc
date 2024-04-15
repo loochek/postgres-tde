@@ -1,4 +1,5 @@
 #include "postgres_tde/source/filters/network/postgres_tde/mutators/blind_index.h"
+#include "postgres_tde/source/filters/network/postgres_tde/postgres_mutation_manager.h"
 #include "source/common/crypto/utility.h"
 #include "source/common/common/fmt.h"
 #include "absl/strings/escaping.h"
@@ -9,7 +10,7 @@ namespace Extensions {
 namespace NetworkFilters {
 namespace PostgresTDE {
 
-BlindIndexMutator::BlindIndexMutator(DatabaseEncryptionConfig *config) : config_(config) {}
+BlindIndexMutator::BlindIndexMutator(MutationManager *manager) : BaseMutator(manager) {}
 
 Result BlindIndexMutator::mutateQuery(hsql::SQLParserResult& query) {
   comparison_mutation_candidates_.clear();
@@ -28,16 +29,16 @@ Result BlindIndexMutator::mutateQuery(hsql::SQLParserResult& query) {
 Result BlindIndexMutator::visitExpression(hsql::Expr* expr) {
   switch (expr->type) {
   case hsql::kExprColumnRef: {
+    // Check possible scenarios of usage of the column reference for compatibility with BI
+
     if (in_select_body_) {
-      // SELECT of possibly indexed column is ok
+      // SELECT of possibly blind indexed column is ok
       return Visitor::visitExpression(expr);
     } else if (in_group_by_) {
-      // GROUP BY possibly indexed column is ok, but it's necessary to replace it to corresponding BI column
+      // GROUP BY possibly blind indexed column is ok, but it's necessary to replace it to corresponding BI column
       group_by_mutation_candidates_.push_back(expr);
       return Visitor::visitExpression(expr);
     }
-
-    // Other usages should be prohibited
 
     if (expr->table == nullptr) {
       return Result::makeError(
@@ -45,10 +46,18 @@ Result BlindIndexMutator::visitExpression(hsql::Expr* expr) {
     }
 
     const std::string& table_name = getTableNameByAlias(expr->table);
-    ColumnConfig *column_config = config_->getColumnConfig(table_name, expr->name);
+    auto column_config = mgr_->getEncryptionConfig()->getColumnConfig(table_name, expr->name);
+
+    if (column_config != nullptr && column_config->hasJoin()) {
+      // Usage may be reasonable if the column is joinable, so delegate check to join mutator
+      return Visitor::visitExpression(expr);
+    }
+
+    // Any other usage must be prohibited
+
     if (column_config != nullptr && column_config->hasBlindIndex()) {
       return Result::makeError(
-          fmt::format("postgres_tde: invalid use of blind indexed column {}.{}", table_name, expr->name));
+          fmt::format("postgres_tde: invalid use of encrypted column {}.{}", table_name, expr->name));
     }
 
     return Visitor::visitExpression(expr);
@@ -76,7 +85,7 @@ Result BlindIndexMutator::visitOperatorExpression(hsql::Expr* expr) {
 
 Result BlindIndexMutator::mutateComparisons() {
   for (hsql::Expr* expr : comparison_mutation_candidates_) {
-    assert(expr->isType(hsql::kExprOperator)
+    ASSERT(expr->isType(hsql::kExprOperator)
            && (expr->opType == hsql::OperatorType::kOpEquals || expr->opType == hsql::OperatorType::kOpNotEquals)
            && expr->expr->isType(hsql::kExprColumnRef) && expr->expr2->isLiteral());
 
@@ -89,7 +98,7 @@ Result BlindIndexMutator::mutateComparisons() {
     }
 
     const std::string& table_name = getTableNameByAlias(column->table);
-    ColumnConfig* column_config = config_->getColumnConfig(table_name, column->name);
+    auto column_config = mgr_->getEncryptionConfig()->getColumnConfig(table_name, column->name);
     if (column_config == nullptr || !column_config->hasBlindIndex()) {
       ENVOY_LOG(error, "blind index is not configured for {}.{}", column->table, column->name);
       continue;
@@ -107,36 +116,9 @@ Result BlindIndexMutator::mutateComparisons() {
   return Result::ok;
 }
 
-Result BlindIndexMutator::visitInsertStatement(hsql::InsertStatement* stmt) {
-  switch (stmt->type) {
-  case hsql::kInsertValues: {
-    if (stmt->columns == nullptr && config_->hasTDEEnabled(stmt->tableName)) {
-      return Result::makeError("postgres_tde: columns definition for INSERT is required for TDE-enabled tables");
-    }
-
-    insert_mutation_candidates_.push_back(stmt);
-    return Visitor::visitInsertStatement(stmt);
-  }
-  case hsql::kInsertSelect:
-    if (config_->hasTDEEnabled(stmt->tableName)) {
-      return Result::makeError("postgres_tde: INSERT INTO SELECT is not supported for TDE-enabled tables");
-    }
-
-    return Visitor::visitInsertStatement(stmt);
-  default:
-    assert(false);
-  }
-}
-
-Result BlindIndexMutator::visitUpdateStatement(hsql::UpdateStatement* stmt) {
-  CHECK_RESULT(Visitor::visitUpdateStatement(stmt));
-  update_mutation_candidates_.push_back(stmt);
-  return Result::ok;
-}
-
 Result BlindIndexMutator::mutateGroupByExpressions() {
   for (hsql::Expr* column : group_by_mutation_candidates_) {
-    assert(column->isType(hsql::kExprColumnRef));
+    ASSERT(column->isType(hsql::kExprColumnRef));
 
     if (column->table == nullptr) {
       return Result::makeError(
@@ -144,7 +126,7 @@ Result BlindIndexMutator::mutateGroupByExpressions() {
     }
 
     const std::string& table_name = getTableNameByAlias(column->table);
-    ColumnConfig* column_config = config_->getColumnConfig(table_name, column->name);
+    auto column_config = mgr_->getEncryptionConfig()->getColumnConfig(table_name, column->name);
     if (column_config == nullptr || !column_config->hasBlindIndex()) {
       ENVOY_LOG(error, "blind index is not configured for the column {}.{}", column->table, column->name);
       continue;
@@ -179,7 +161,7 @@ Result BlindIndexMutator::mutateInsertStatement() {
       char* column = (*stmt->columns)[i];
       hsql::Expr* value = (*stmt->values)[i];
 
-      ColumnConfig * column_config = config_->getColumnConfig(stmt->tableName, column);
+      auto column_config = mgr_->getEncryptionConfig()->getColumnConfig(stmt->tableName, column);
       if (column_config == nullptr || !column_config->hasBlindIndex()) {
         continue;
       }
@@ -213,7 +195,7 @@ Result BlindIndexMutator::mutateUpdateStatement() {
     };
 
     for (hsql::UpdateClause* update : *stmt->updates) {
-      ColumnConfig* column_config = config_->getColumnConfig(stmt->table->name, update->column);
+      auto column_config = mgr_->getEncryptionConfig()->getColumnConfig(stmt->table->name, update->column);
       if (column_config == nullptr || !column_config->hasBlindIndex()) {
         continue;
       }
@@ -232,8 +214,8 @@ Result BlindIndexMutator::mutateUpdateStatement() {
   return Result::ok;
 }
 
-hsql::Expr* BlindIndexMutator::createHashLiteral(hsql::Expr* orig_literal, ColumnConfig *column_config) {
-  assert(orig_literal->isLiteral());
+hsql::Expr* BlindIndexMutator::createHashLiteral(hsql::Expr* orig_literal, const ColumnConfig *column_config) {
+  ASSERT(orig_literal->isLiteral());
 
   switch (orig_literal->type) {
   case hsql::kExprLiteralNull:
@@ -261,11 +243,11 @@ hsql::Expr* BlindIndexMutator::createHashLiteral(hsql::Expr* orig_literal, Colum
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(hmac_hex_str));
   }
   default:
-    assert(false);
+    ASSERT(false);
   }
 }
 
-std::string BlindIndexMutator::generateHMACString(absl::string_view data, ColumnConfig *column_config) {
+std::string BlindIndexMutator::generateHMACString(absl::string_view data, const ColumnConfig *column_config) {
   auto& crypto_util = Envoy::Common::Crypto::UtilitySingleton::get();
   auto hmac = crypto_util.getSha256Hmac(column_config->BIKey(), data);
 

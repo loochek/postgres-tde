@@ -13,6 +13,7 @@ static_resources:
           stat_prefix: stats
           terminate_ssl: true
           upstream_ssl: 0
+          permissive_parsing: false
       - name: envoy.tcp_proxy
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy

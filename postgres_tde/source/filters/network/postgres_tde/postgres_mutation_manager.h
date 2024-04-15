@@ -16,6 +16,8 @@ namespace Extensions {
 namespace NetworkFilters {
 namespace PostgresTDE {
 
+class PostgresFilterConfig;
+using PostgresFilterConfigSharedPtr = std::shared_ptr<PostgresFilterConfig>;
 
 class MutationManagerCallbacks {
 public:
@@ -49,13 +51,16 @@ public:
   virtual void processCommandComplete(std::unique_ptr<CommandCompleteMessage>&) PURE;
   virtual void processEmptyQueryResponse(std::unique_ptr<EmptyQueryResponseMessage>&) PURE;
   virtual void processErrorResponse(std::unique_ptr<ErrorResponseMessage>&) PURE;
+
+  virtual const PostgresFilterConfig* getConfig() const PURE;
+  virtual const DatabaseEncryptionConfig* getEncryptionConfig() const PURE;
 };
 
 using MutationManagerPtr = std::unique_ptr<MutationManager>;
 
 class MutationManagerImpl : public MutationManager, Logger::Loggable<Logger::Id::filter> {
 public:
-  explicit MutationManagerImpl(MutationManagerCallbacks* callbacks);
+  MutationManagerImpl(PostgresFilterConfigSharedPtr config, MutationManagerCallbacks* callbacks);
 
   void processQuery(std::unique_ptr<QueryMessage>& message) override;
   void processParse(std::unique_ptr<ParseMessage>& message) override;
@@ -63,9 +68,17 @@ public:
   void processRowDescription(std::unique_ptr<RowDescriptionMessage>& message) override;
   void processDataRow(std::unique_ptr<DataRowMessage>& message) override;
 
-  void processCommandComplete(std::unique_ptr<CommandCompleteMessage>& message) override;
+  void processCommandComplete(std::unique_ptr<CommandCompleteMessage>& cc_message) override;
   void processEmptyQueryResponse(std::unique_ptr<EmptyQueryResponseMessage>& message) override;
   void processErrorResponse(std::unique_ptr<ErrorResponseMessage>& message) override;
+
+  const PostgresFilterConfig* getConfig() const override {
+    return config_.get();
+  }
+
+  const DatabaseEncryptionConfig* getEncryptionConfig() const override {
+    return &encryption_config_;
+  }
 
 protected:
   Result processQueryImpl(QueryMessage&);
@@ -76,9 +89,12 @@ protected:
   std::unique_ptr<Envoy::Extensions::Common::SQLUtils::DumpVisitor> dumper_;
 
   Result error_state_;
-  std::vector<MessagePtr> retent_response_;
 
-  DummyConfig config_;
+  std::unique_ptr<RowDescriptionMessage> retent_row_description_;
+  std::vector<std::unique_ptr<DataRowMessage>> retent_rows_;
+
+  PostgresFilterConfigSharedPtr config_;
+  DummyConfig encryption_config_;
   MutationManagerCallbacks* callbacks_;
 };
 

@@ -20,6 +20,7 @@ NetworkFilters::PostgresTDE::PostgresTDEConfigFactory::createFilterFactoryFromPr
       PROTOBUF_GET_WRAPPED_OR_DEFAULT(proto_config, enable_sql_parsing, true);
   config_options.terminate_ssl_ = proto_config.terminate_ssl();
   config_options.upstream_ssl_ = proto_config.upstream_ssl();
+  config_options.permissive_parsing_ = proto_config.permissive_parsing();
 
   PostgresFilterConfigSharedPtr filter_config(
       std::make_shared<PostgresFilterConfig>(config_options, context.scope()));
