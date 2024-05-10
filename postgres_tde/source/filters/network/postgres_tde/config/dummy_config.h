@@ -5,12 +5,12 @@
 /*
 CREATE TABLE cities
 (
-    id           UUID      NOT NULL
+    id           BYTEA     NOT NULL
         PRIMARY KEY,
+    id_bi        BYTEA     NOT NULL,
+    id_joinkey   BYTEA     NOT NULL,
     name         BYTEA     NOT NULL,
     name_bi      BYTEA     NOT NULL,
-    name_joinkey BYTEA     NOT NULL,
-    region       BYTEA     NOT NULL,
     kladr_id     BYTEA     NOT NULL,
     priority     BYTEA,
     created_at   BYTEA     NOT NULL,
@@ -18,12 +18,13 @@ CREATE TABLE cities
     timezone     BYTEA
 );
 
-CREATE TABLE name2region
-  (
-      name         BYTEA     NOT NULL,
-      name_joinkey BYTEA     NOT NULL,
-      region       BYTEA     NOT NULL
-  );
+CREATE TABLE city2region
+(
+    id           BYTEA     NOT NULL
+        PRIMARY KEY,
+    id_joinkey   BYTEA     NOT NULL,
+    region       BYTEA     NOT NULL,
+);
 */
 
 namespace Envoy {
@@ -137,31 +138,30 @@ private:
 class DummyConfig : public DatabaseEncryptionConfig {
 public:
   DummyConfig() {
-    cities_columns_["id"]         = DummyColumnConfig("id",         false, empty_key,            2950, -1, false, empty_key,               false);
-    cities_columns_["name"]       = DummyColumnConfig("name",       true,  create_key_vec(key1), 1043, -1, true,  create_key_vec(bi_key1), true);
-    cities_columns_["region"]     = DummyColumnConfig("region",     true,  create_key_vec(key2), 1043, -1, false, empty_key,               false);
-    cities_columns_["kladr_id"]   = DummyColumnConfig("kladr_id",   true,  create_key_vec(key3), 1043, -1, false, empty_key,               false);
-    cities_columns_["priority"]   = DummyColumnConfig("priority",   true,  create_key_vec(key4), 23,    4, false, empty_key,               false);
-    cities_columns_["created_at"] = DummyColumnConfig("created_at", true,  create_key_vec(key5), 1114, -1, false, empty_key,               false);
-    cities_columns_["updated_at"] = DummyColumnConfig("updated_at", true,  create_key_vec(key6), 1114, -1, false, empty_key,               false);
-    cities_columns_["timezone"]   = DummyColumnConfig("timezone",   true,  create_key_vec(key7), 1043, -1, false, empty_key,               false);
+    cities_columns_["id"]         = DummyColumnConfig("id",         true,  create_key_vec(key1), 2950, -1, true,  create_key_vec(bi_key1), true);
+    cities_columns_["name"]       = DummyColumnConfig("name",       true,  create_key_vec(key2), 1043, -1, true,  create_key_vec(bi_key2), false);
+    cities_columns_["kladr_id"]   = DummyColumnConfig("kladr_id",   true,  create_key_vec(key3), 1043, -1, false, empty_key,                    false);
+    cities_columns_["priority"]   = DummyColumnConfig("priority",   true,  create_key_vec(key4), 23,    4, false, empty_key,                    false);
+    cities_columns_["created_at"] = DummyColumnConfig("created_at", true,  create_key_vec(key5), 1114, -1, false, empty_key,                    false);
+    cities_columns_["updated_at"] = DummyColumnConfig("updated_at", true,  create_key_vec(key6), 1114, -1, false, empty_key,                    false);
+    cities_columns_["timezone"]   = DummyColumnConfig("timezone",   true,  create_key_vec(key7), 1043, -1, false, empty_key,                    false);
 
-    name2region_columns_["name"]   = DummyColumnConfig("name",       true,  create_key_vec(key8), 1043, -1, false,  empty_key,              true);
-    name2region_columns_["region"] = DummyColumnConfig("region",     true,  create_key_vec(key9), 1043, -1, false, empty_key,               false);
+    city2region_columns_["id"]     = DummyColumnConfig("id",        true,  create_key_vec(key8), 2950, -1, false, empty_key,                    true);
+    city2region_columns_["region"] = DummyColumnConfig("region",    true,  create_key_vec(key9), 1043, -1, false, empty_key,                    false);
   }
 
   const ColumnConfig* getColumnConfig(const std::string& table, const std::string& name) const override {
     if (table == "cities" && cities_columns_.find(name) != cities_columns_.end()) {
       return &cities_columns_.at(name);
-    } else if (table == "name2region" && name2region_columns_.find(name) != name2region_columns_.end()) {
-      return &name2region_columns_.at(name);
+    } else if (table == "city2region" && city2region_columns_.find(name) != city2region_columns_.end()) {
+      return &city2region_columns_.at(name);
     } else {
       return nullptr;
     }
   }
 
   bool hasTDEEnabled(const std::string& table) const override {
-    return table == "cities" || table == "name2region";
+    return table == "cities" || table == "city2region";
   }
 
   size_t join_key_size() const override {
@@ -170,7 +170,7 @@ public:
 
 private:
   std::unordered_map<std::string, DummyColumnConfig> cities_columns_;
-  std::unordered_map<std::string, DummyColumnConfig> name2region_columns_;
+  std::unordered_map<std::string, DummyColumnConfig> city2region_columns_;
 };
 
 } // namespace PostgresTDE
