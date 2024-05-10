@@ -37,7 +37,7 @@ Result ProbabilisticJoinMutator::mutateRowDescription(RowDescriptionMessage& mes
     auto column_ref = getSelectColumnByAlias(column->name());
     if (column_ref != nullptr) {
       columns2idx[*column_ref] = i;
-      ENVOY_LOG(error, "matched RowDescription column: {} -> ({}, {})", column->name(),
+      ENVOY_LOG(debug, "matched RowDescription column: {} -> ({}, {})", column->name(),
                 column_ref->table(), column_ref->column());
     }
   }
@@ -53,7 +53,7 @@ Result ProbabilisticJoinMutator::mutateRowDescription(RowDescriptionMessage& mes
     size_t left_column_idx = columns2idx.at(left_column_ref);
     size_t right_column_idx = columns2idx.at(right_column_ref);
 
-    ENVOY_LOG(error, "matched join: ({}.{}, {}.{}) -> (column {}, column {})",
+    ENVOY_LOG(debug, "matched join: ({}.{}, {}.{}) -> (column {}, column {})",
               left_column_ref.table(), left_column_ref.column(), right_column_ref.table(),
               right_column_ref.column(), left_column_idx, right_column_idx);
     join_comparisons_indices_.emplace_back(left_column_idx, right_column_idx);
@@ -68,7 +68,7 @@ Result ProbabilisticJoinMutator::mutateDataRow(std::unique_ptr<DataRowMessage>& 
     auto& right_column_data = message->columns()[right_column_idx];
 
     if (*left_column_data != *right_column_data) {
-      ENVOY_LOG(error, "discarding row because the join condition is not met: {}", message->toString());
+      ENVOY_LOG(debug, "discarding row because the join condition is not met: {}", message->toString());
       message.reset();
       return Result::ok;
     }
@@ -111,7 +111,7 @@ Result ProbabilisticJoinMutator::visitOperatorExpression(hsql::Expr* expr) {
   switch (expr->opType) {
   case hsql::kOpEquals:
     if (expr->expr->isType(hsql::kExprColumnRef) && expr->expr2->isType(hsql::kExprColumnRef)) {
-      ENVOY_LOG(error, "join candidate: {} {}", expr->expr->name, expr->expr2->name);
+      ENVOY_LOG(debug, "join candidate: {} {}", expr->expr->name, expr->expr2->name);
       join_mutation_candidates_.push_back(expr);
       return Result::ok;
     }
@@ -156,11 +156,11 @@ Result ProbabilisticJoinMutator::mutateJoins() {
     }
 
     if (left_column_config == nullptr || !left_column_config->hasJoin()) {
-      ENVOY_LOG(error, "join is not configured for {}.{}", left_table_name, left_column_name);
+      ENVOY_LOG(debug, "join is not configured for {}.{}", left_table_name, left_column_name);
       continue;
     }
     if (right_column_config == nullptr || !right_column_config->hasJoin()) {
-      ENVOY_LOG(error, "join is not configured for {}.{}", right_table_name, right_column_name);
+      ENVOY_LOG(debug, "join is not configured for {}.{}", right_table_name, right_column_name);
       continue;
     }
 
@@ -172,7 +172,7 @@ Result ProbabilisticJoinMutator::mutateJoins() {
     free(right_column->name);
     right_column->name = Common::Utils::makeOwnedCString(right_join_key_column_name);
 
-    ENVOY_LOG(error, "join: {}.{} == {}.{} ", left_table_name, left_column_name, right_table_name,
+    ENVOY_LOG(debug, "join: {}.{} == {}.{} ", left_table_name, left_column_name, right_table_name,
               right_column_name);
     join_comparisons_.emplace_back(std::move(left_column_ref), std::move(right_column_ref));
   }

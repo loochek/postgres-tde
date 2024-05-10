@@ -23,7 +23,7 @@ MutationManagerImpl::MutationManagerImpl(PostgresFilterConfigSharedPtr config,
 }
 
 void PostgresTDE::MutationManagerImpl::processQuery(std::unique_ptr<QueryMessage>& message) {
-  ENVOY_LOG(error, "MutationManagerImpl::processQuery - got {}", message->toString());
+  ENVOY_LOG(debug, "MutationManagerImpl::processQuery - got {}", message->toString());
   ASSERT(error_state_.isOk);
 
   retent_rows_.clear();
@@ -37,13 +37,13 @@ void PostgresTDE::MutationManagerImpl::processQuery(std::unique_ptr<QueryMessage
 }
 
 void PostgresTDE::MutationManagerImpl::processParse(std::unique_ptr<ParseMessage>& message) {
-  ENVOY_LOG(error, "MutationManagerImpl::processParse - got {}", message->toString());
+  ENVOY_LOG(debug, "MutationManagerImpl::processParse - got {}", message->toString());
   message.reset();
   callbacks_->emitBackendMessage(createErrorResponseMessage("postgres_tde: prepared statements are not supported"));
 }
 
 void MutationManagerImpl::processRowDescription(std::unique_ptr<RowDescriptionMessage>& message) {
-  ENVOY_LOG(error, "MutationManagerImpl::processRowDescription - got {}", message->toString());
+  ENVOY_LOG(debug, "MutationManagerImpl::processRowDescription - got {}", message->toString());
 
   ASSERT(error_state_.isOk);
   for (auto it = mutator_chain_.rbegin(); it != mutator_chain_.rend(); it++) {
@@ -55,12 +55,12 @@ void MutationManagerImpl::processRowDescription(std::unique_ptr<RowDescriptionMe
     }
   }
 
-  ENVOY_LOG(error, "MutationManagerImpl::processRowDescription - after {}", message->toString());
+  ENVOY_LOG(debug, "MutationManagerImpl::processRowDescription - after {}", message->toString());
   retent_row_description_ = std::move(message);
 }
 
 void MutationManagerImpl::processDataRow(std::unique_ptr<DataRowMessage>& message) {
-  ENVOY_LOG(error, "MutationManagerImpl::processDataRow");
+  ENVOY_LOG(debug, "MutationManagerImpl::processDataRow");
 
   if (!error_state_.isOk) {
     ENVOY_LOG(warn, "discarding DataRow due to error");
@@ -85,7 +85,7 @@ void MutationManagerImpl::processDataRow(std::unique_ptr<DataRowMessage>& messag
 }
 
 void MutationManagerImpl::processCommandComplete(std::unique_ptr<CommandCompleteMessage>& cc_message) {
-  ENVOY_LOG(error, "MutationManagerImpl::processCommandComplete - got {}", cc_message->toString());
+  ENVOY_LOG(debug, "MutationManagerImpl::processCommandComplete - got {}", cc_message->toString());
 
   if (error_state_.isOk) {
     // Emit renent response
@@ -104,14 +104,14 @@ void MutationManagerImpl::processCommandComplete(std::unique_ptr<CommandComplete
 }
 
 void MutationManagerImpl::processEmptyQueryResponse(std::unique_ptr<EmptyQueryResponseMessage>&) {
-  ENVOY_LOG(error, "MutationManagerImpl::processEmptyQueryResponse");
+  ENVOY_LOG(debug, "MutationManagerImpl::processEmptyQueryResponse");
 
   ASSERT(error_state_.isOk);
   // Pass through
 }
 
 void MutationManagerImpl::processErrorResponse(std::unique_ptr<ErrorResponseMessage>& message) {
-  ENVOY_LOG(error, "MutationManagerImpl::processErrorResponse - got {}", message->toString());
+  ENVOY_LOG(debug, "MutationManagerImpl::processErrorResponse - got {}", message->toString());
 
   ASSERT(error_state_.isOk);
   // Pass through
@@ -145,7 +145,7 @@ Result PostgresTDE::MutationManagerImpl::processQueryImpl(QueryMessage& message)
   }
 
   query_str = dumper_->getResult();
-  ENVOY_LOG(error, "mutated query message: {}", message.toString());
+  ENVOY_LOG(debug, "mutated query message: {}", message.toString());
   return Result::ok;
 }
 

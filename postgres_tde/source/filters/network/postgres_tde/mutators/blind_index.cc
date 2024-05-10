@@ -73,7 +73,7 @@ Result BlindIndexMutator::visitOperatorExpression(hsql::Expr* expr) {
   case hsql::kOpEquals:
   case hsql::kOpNotEquals:
     if (expr->expr->isType(hsql::kExprColumnRef) && expr->expr2->isLiteral()) {
-      ENVOY_LOG(error, "blind index candidate: {} {}", expr->expr->name, expr->expr2->name);
+      ENVOY_LOG(debug, "blind index candidate: {} {}", expr->expr->name, expr->expr2->name);
       comparison_mutation_candidates_.push_back(expr);
       return Result::ok;
     }
@@ -100,7 +100,7 @@ Result BlindIndexMutator::mutateComparisons() {
     const std::string& table_name = getTableNameByAlias(column->table);
     auto column_config = mgr_->getEncryptionConfig()->getColumnConfig(table_name, column->name);
     if (column_config == nullptr || !column_config->hasBlindIndex()) {
-      ENVOY_LOG(error, "blind index is not configured for {}.{}", column->table, column->name);
+      ENVOY_LOG(debug, "blind index is not configured for {}.{}", column->table, column->name);
       continue;
     }
 
@@ -128,7 +128,7 @@ Result BlindIndexMutator::mutateGroupByExpressions() {
     const std::string& table_name = getTableNameByAlias(column->table);
     auto column_config = mgr_->getEncryptionConfig()->getColumnConfig(table_name, column->name);
     if (column_config == nullptr || !column_config->hasBlindIndex()) {
-      ENVOY_LOG(error, "blind index is not configured for the column {}.{}", column->table, column->name);
+      ENVOY_LOG(debug, "blind index is not configured for the column {}.{}", column->table, column->name);
       continue;
     }
 

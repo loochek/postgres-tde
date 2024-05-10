@@ -48,7 +48,7 @@ Result EncryptionMutator::mutateRowDescription(RowDescriptionMessage& message) {
         mgr_->getEncryptionConfig()->getColumnConfig(column_ref->table(), column_ref->column()));
 
     if (column_config != nullptr && column_config->isEncrypted()) {
-      ENVOY_LOG(error, "matched encrypted column: {} -> ({}, {})", column->name(),
+      ENVOY_LOG(debug, "matched encrypted column: {} -> ({}, {})", column->name(),
                 column_ref->table(), column_ref->column());
 
       // Ensure that encrypted data is returned as hex string

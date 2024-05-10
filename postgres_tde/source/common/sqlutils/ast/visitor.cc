@@ -45,8 +45,9 @@ Result Visitor::visitExpression(hsql::Expr* expr) {
   case hsql::kExprLiteralString:
   case hsql::kExprLiteralInt:
   case hsql::kExprLiteralNull:
-  case hsql::kExprStar:
     return Result::ok;
+  case hsql::kExprStar:
+    return Result::makeError("postgres_tde: star expression is not supported");
 
   case hsql::kExprColumnRef: {
     if (in_select_body_) {
@@ -65,20 +66,22 @@ Result Visitor::visitExpression(hsql::Expr* expr) {
       if (expr->alias != nullptr) {
         // Save actual alias if present
         select_column_aliases_[expr->alias] = &(*column);
-        ENVOY_LOG(error, "select column alias: {} -> ({}, {})", expr->alias, column->first, column->second);
+        ENVOY_LOG(debug, "select column alias: {} -> ({}, {})", expr->alias, column->first,
+                  column->second);
       } else {
         // Basically we just should associate column name with that column,
-        // but multiple columns with the same name can appear in RowDescription as the result of join.
-        // It can't be dealt in easy way, so we just ban it
+        // but multiple columns with the same name can appear in RowDescription as the result of
+        // join. It can't be dealt in easy way, so we just ban it
         if (select_column_aliases_.find(expr->name) != select_column_aliases_.end() &&
             *select_column_aliases_.at(expr->name) != *column) {
-          return Result::makeError(
-              fmt::format("postgres_tde: detected ambiguous column name {}. Please specify a different alias for each column",
-                          expr->name));
+          return Result::makeError(fmt::format("postgres_tde: detected ambiguous column name {}. "
+                                               "Please specify a different alias for each column",
+                                               expr->name));
         }
 
         select_column_aliases_[expr->name] = &(*column);
-        ENVOY_LOG(error, "select column alias: {} -> ({}, {})", expr->name, column->first, column->second);
+        ENVOY_LOG(debug, "select column alias: {} -> ({}, {})", expr->name, column->first,
+                  column->second);
       }
     }
 
@@ -194,7 +197,7 @@ Result Visitor::visitTableRef(hsql::TableRef* table_ref) {
   switch (table_ref->type) {
   case hsql::kTableName:
     if (table_ref->alias != nullptr) {
-      ENVOY_LOG(error, "table alias: {} -> {}", table_ref->alias->name, table_ref->name);
+      ENVOY_LOG(debug, "table alias: {} -> {}", table_ref->alias->name, table_ref->name);
       table_aliases_[std::string(table_ref->alias->name)] = std::string(table_ref->name);
     }
 
@@ -243,7 +246,7 @@ Result Visitor::visitUpdateStatement(hsql::UpdateStatement* stmt) {
   ASSERT(stmt->table->type == hsql::kTableName);
 
   if (stmt->table->alias != nullptr) {
-    ENVOY_LOG(error, "table alias: {} -> {}", stmt->table->alias->name, stmt->table->name);
+    ENVOY_LOG(debug, "table alias: {} -> {}", stmt->table->alias->name, stmt->table->name);
     table_aliases_[std::string(stmt->table->alias->name)] = std::string(stmt->table->name);
   }
 

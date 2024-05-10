@@ -118,9 +118,9 @@ void DecoderImpl::initialize() {
    current decoder's state.
 */
 Decoder::Result DecoderImpl::onData(Buffer::Instance& parse_data, bool frontend) {
-//  ENVOY_LOG(error, "onData ent: {} bytes {}", parse_data.length(), parse_data.toString());
+//  ENVOY_LOG(debug, "onData ent: {} bytes {}", parse_data.length(), parse_data.toString());
 //  absl::Cleanup cleanup = [&]() {
-//    ENVOY_LOG(error, "onData ext: {} bytes {}", parse_data.length(), parse_data.toString());
+//    ENVOY_LOG(debug, "onData ext: {} bytes {}", parse_data.length(), parse_data.toString());
 //  };
 
   switch (state_) {
