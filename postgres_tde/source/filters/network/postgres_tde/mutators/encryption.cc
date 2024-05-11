@@ -189,22 +189,18 @@ hsql::Expr* EncryptionMutator::createEncryptedLiteral(hsql::Expr* orig_literal,
   case hsql::kExprLiteralString: {
     const std::string& encrypted_hex_str =
         generateCryptoString(absl::string_view(static_cast<const char*>(orig_literal->name),
-                                               strlen(orig_literal->name) + 1),
+                                               strlen(orig_literal->name)),
                              column_config);
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(encrypted_hex_str));
   }
   case hsql::kExprLiteralInt: {
     const std::string& encrypted_hex_str =
-        generateCryptoString(absl::string_view(reinterpret_cast<const char*>(&orig_literal->ival),
-                                               sizeof(orig_literal->ival)),
-                             column_config);
+        generateCryptoString(std::to_string(orig_literal->ival), column_config);
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(encrypted_hex_str));
   }
   case hsql::kExprLiteralFloat: {
     const std::string& encrypted_hex_str =
-        generateCryptoString(absl::string_view(reinterpret_cast<const char*>(&orig_literal->fval),
-                                               sizeof(orig_literal->fval)),
-                             column_config);
+        generateCryptoString(std::to_string(orig_literal->fval), column_config);
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(encrypted_hex_str));
   }
   default:

@@ -81,6 +81,7 @@ void MutationManagerImpl::processDataRow(std::unique_ptr<DataRowMessage>& messag
     }
   }
 
+  ENVOY_LOG(debug, "MutationManagerImpl::processRowDescription - after {}", message->toString());
   retent_rows_.push_back(std::move(message));
 }
 

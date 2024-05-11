@@ -150,11 +150,6 @@ Result ProbabilisticJoinMutator::mutateJoins() {
         mgr_->getEncryptionConfig()->getColumnConfig(right_table_name, right_column_name);
     auto right_column_ref = ColumnRef(right_table_name, right_column_name);
 
-    if (!isColumnSelected(left_column_ref) || !isColumnSelected(right_column_ref)) {
-      return Result::makeError(
-          "postgres_tde: columns present in join condition must be also present in SELECT body");
-    }
-
     if (left_column_config == nullptr || !left_column_config->hasJoin()) {
       ENVOY_LOG(debug, "join is not configured for {}.{}", left_table_name, left_column_name);
       continue;
@@ -162,6 +157,11 @@ Result ProbabilisticJoinMutator::mutateJoins() {
     if (right_column_config == nullptr || !right_column_config->hasJoin()) {
       ENVOY_LOG(debug, "join is not configured for {}.{}", right_table_name, right_column_name);
       continue;
+    }
+
+    if (!isColumnSelected(left_column_ref) || !isColumnSelected(right_column_ref)) {
+      return Result::makeError(
+          "postgres_tde: columns present in join condition must be also present in SELECT body");
     }
 
     const std::string& left_join_key_column_name = left_column_config->joinKeyColumnName();
@@ -268,7 +268,7 @@ hsql::Expr* ProbabilisticJoinMutator::createJoinKeyLiteral(hsql::Expr* orig_lite
     return hsql::Expr::makeNullLiteral();
   case hsql::kExprLiteralString: {
     const std::string& key_hex_str = generateJoinKeyString(absl::string_view(
-        static_cast<const char*>(orig_literal->name), strlen(orig_literal->name) + 1));
+        static_cast<const char*>(orig_literal->name), strlen(orig_literal->name)));
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(key_hex_str));
   }
   case hsql::kExprLiteralInt: {

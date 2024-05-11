@@ -223,7 +223,7 @@ hsql::Expr* BlindIndexMutator::createHashLiteral(hsql::Expr* orig_literal, const
     return hsql::Expr::makeNullLiteral();
   case hsql::kExprLiteralString: {
     const std::string& hmac_hex_str = generateHMACString(
-        absl::string_view(static_cast<const char*>(orig_literal->name), strlen(orig_literal->name) + 1),
+        absl::string_view(static_cast<const char*>(orig_literal->name), strlen(orig_literal->name)),
         column_config
     );
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(hmac_hex_str));
