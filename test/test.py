@@ -32,7 +32,7 @@ def prepare_schema(cursor):
     except psycopg2.errors.UndefinedTable:
         pass
 
-    cursor.execute(open('demo_tables.sql', 'r').read())
+    cursor.execute(open('../demo_tables.sql', 'r').read())
 
 
 # Ensure that TDE doesn't alter the data

@@ -7,8 +7,8 @@ export PGPASSWORD=postgres
 
 prepare() {
   psql -h $HOST -p 5432 -U postgres -f cleanup.sql $OPTS &> /dev/null
-  psql -h $HOST -p 5432 -U postgres -f demo_tables_open.sql $OPTS > /dev/null
-  psql -h $HOST -p 5432 -U postgres -f demo_tables.sql $OPTS > /dev/null
+  psql -h $HOST -p 5432 -U postgres -f ../demo_tables_open.sql $OPTS > /dev/null
+  psql -h $HOST -p 5432 -U postgres -f ../demo_tables.sql $OPTS > /dev/null
 }
 
 prepare
