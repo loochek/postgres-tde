@@ -26,7 +26,7 @@ Result BaseMutator::visitInsertStatement(hsql::InsertStatement* stmt) {
 
     return Visitor::visitInsertStatement(stmt);
   default:
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 

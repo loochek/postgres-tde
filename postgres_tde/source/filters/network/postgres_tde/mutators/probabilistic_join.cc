@@ -282,7 +282,7 @@ hsql::Expr* ProbabilisticJoinMutator::createJoinKeyLiteral(hsql::Expr* orig_lite
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(key_hex_str));
   }
   default:
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 

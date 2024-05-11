@@ -208,7 +208,7 @@ hsql::Expr* EncryptionMutator::createEncryptedLiteral(hsql::Expr* orig_literal,
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(encrypted_hex_str));
   }
   default:
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 

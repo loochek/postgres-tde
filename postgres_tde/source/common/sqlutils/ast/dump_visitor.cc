@@ -116,7 +116,7 @@ Result DumpVisitor::visitOperatorExpression(hsql::Expr* expr) {
     return Result::ok;
 
   default:
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 
@@ -225,7 +225,7 @@ Result DumpVisitor::visitTableRef(hsql::TableRef* table_ref) {
     }
     return Result::ok;
   default:
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 
@@ -256,7 +256,7 @@ Result DumpVisitor::visitInsertStatement(hsql::InsertStatement* stmt) {
     query_str_ << " ";
     return visitSelectStatement(stmt->select);
   default:
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 
@@ -286,18 +286,18 @@ Result DumpVisitor::visitUpdateStatement(hsql::UpdateStatement* stmt) {
 const char* DumpVisitor::operatorToString(hsql::OperatorType type) {
   switch (type) {
   case hsql::kOpNone:
-    ASSERT(false);
+    PANIC("not implemented");;
     return "";
   // Ternary operator
   case hsql::kOpBetween:
-    ASSERT(false);
+    PANIC("not implemented");
     return "";
   // n-nary special case
   case hsql::kOpCase:
-    ASSERT(false);
+    PANIC("not implemented");
     return "";
   case hsql::kOpCaseListElement: // `WHEN expr THEN expr`
-    ASSERT(false);
+    PANIC("not implemented");
     return "";
   // Binary operators.
   case hsql::kOpPlus:
@@ -349,7 +349,7 @@ const char* DumpVisitor::operatorToString(hsql::OperatorType type) {
   case hsql::kOpExists:
     return "EXISTS";
   default:
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 

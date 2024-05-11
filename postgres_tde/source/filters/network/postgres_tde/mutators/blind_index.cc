@@ -243,7 +243,7 @@ hsql::Expr* BlindIndexMutator::createHashLiteral(hsql::Expr* orig_literal, const
     return hsql::Expr::makeLiteral(Common::Utils::makeOwnedCString(hmac_hex_str));
   }
   default:
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 

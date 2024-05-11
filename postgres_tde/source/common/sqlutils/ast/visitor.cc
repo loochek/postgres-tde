@@ -31,7 +31,7 @@ Result Visitor::visitStatement(hsql::SQLStatement* stmt) {
     return visitDeleteStatement(dynamic_cast<hsql::DeleteStatement*>(stmt));
   default:
     // TODO: DDL statements
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 
@@ -88,7 +88,7 @@ Result Visitor::visitExpression(hsql::Expr* expr) {
     return Result::ok;
   }
   default:
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 
@@ -131,7 +131,7 @@ Result Visitor::visitOperatorExpression(hsql::Expr* expr) {
     return Result::ok;
 
   default:
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 
@@ -223,7 +223,7 @@ Result Visitor::visitTableRef(hsql::TableRef* table_ref) {
     }
     return Result::ok;
   default:
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 
@@ -238,7 +238,7 @@ Result Visitor::visitInsertStatement(hsql::InsertStatement* stmt) {
   case hsql::kInsertSelect:
     return visitSelectStatement(stmt->select);
   default:
-    ASSERT(false);
+    PANIC("not implemented");;
   }
 }
 
