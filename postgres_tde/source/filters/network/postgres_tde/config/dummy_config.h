@@ -165,7 +165,7 @@ public:
   }
 
   size_t join_key_size() const override {
-    return 2;
+    return 1;
   }
 
 private:

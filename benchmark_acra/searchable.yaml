@@ -1,0 +1,50 @@
+defaults:
+  crypto_envelope: acrablock
+  reencrypting_to_acrablocks: true
+
+schemas:
+- table: cities_acra
+  columns:
+    - id
+    - name
+    - kladr_id
+    - priority
+    - created_at
+    - updated_at
+    - timezone
+  encrypted:
+    - column: id
+      client_id: client
+      data_type: str
+      searchable: true
+    - column: name
+      client_id: client
+      data_type: str
+      searchable: true
+    - column: kladr_id
+      client_id: client
+      data_type: str
+    - column: priority
+      client_id: client
+      data_type: int32
+    - column: created_at
+      client_id: client
+      data_type: str
+    - column: updated_at
+      client_id: client
+      data_type: str
+    - column: timezone
+      client_id: client
+      data_type: str
+- table: city2region_acra
+  columns:
+    - id
+    - region
+  encrypted:
+    - column: id
+      client_id: client
+      data_type: str
+      searchable: true
+    - column: region
+      client_id: client
+      data_type: str

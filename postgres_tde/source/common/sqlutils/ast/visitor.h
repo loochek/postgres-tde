@@ -49,7 +49,7 @@ protected:
   virtual Result visitUpdateStatement(hsql::UpdateStatement* stmt);
   virtual Result visitDeleteStatement(hsql::DeleteStatement* stmt);
 
-  const std::string& getTableNameByAlias(const std::string& alias) const;
+  std::string getTableNameByAlias(const std::string& alias) const;
   const ColumnRef* getSelectColumnByAlias(const std::string& alias) const;
   bool isColumnSelected(const ColumnRef& column) const;
 

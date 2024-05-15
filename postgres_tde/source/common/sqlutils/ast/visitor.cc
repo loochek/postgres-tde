@@ -60,7 +60,7 @@ Result Visitor::visitExpression(hsql::Expr* expr) {
 
       // Save possible aliases to this column
 
-      auto& table_name = getTableNameByAlias(expr->table);
+      const auto& table_name = getTableNameByAlias(expr->table);
       auto [column, _] = select_columns_.insert(ColumnRef(table_name, expr->name));
 
       if (expr->alias != nullptr) {
@@ -266,7 +266,7 @@ Result Visitor::visitDeleteStatement(hsql::DeleteStatement*) {
   // TODO:
 }
 
-const std::string& Visitor::getTableNameByAlias(const std::string& alias) const {
+std::string Visitor::getTableNameByAlias(const std::string& alias) const {
   if (table_aliases_.find(alias) == table_aliases_.end()) {
     return alias;
   }
