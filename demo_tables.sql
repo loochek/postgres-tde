@@ -21,8 +21,8 @@ CREATE TABLE city2region
     region       BYTEA     NOT NULL
 );
 
-CREATE UNIQUE INDEX cities_id_bi_idx ON cities (id_bi);
+CREATE INDEX cities_id_bi_idx ON cities (id_bi);
 CREATE INDEX cities_id_joinkey_idx ON cities (id_joinkey);
-CREATE UNIQUE INDEX cities_name_bi_idx ON cities (name_bi);
+CREATE INDEX cities_name_bi_idx ON cities (name_bi);
 
 CREATE INDEX city2region_id_joinkey_idx ON city2region (id_joinkey);
