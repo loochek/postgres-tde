@@ -20,7 +20,6 @@ public:
   Result mutateDataRow(std::unique_ptr<DataRowMessage>& message) override;
 
 protected:
-  Result visitExpression(hsql::Expr* expr) override;
   Result visitOperatorExpression(hsql::Expr* expr) override;
 
   Result mutateJoins();

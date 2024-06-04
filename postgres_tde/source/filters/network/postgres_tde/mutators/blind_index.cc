@@ -29,35 +29,9 @@ Result BlindIndexMutator::mutateQuery(hsql::SQLParserResult& query) {
 Result BlindIndexMutator::visitExpression(hsql::Expr* expr) {
   switch (expr->type) {
   case hsql::kExprColumnRef: {
-    // Check possible scenarios of usage of the column reference for compatibility with BI
-
-    if (in_select_body_) {
-      // SELECT of possibly blind indexed column is ok
-      return Visitor::visitExpression(expr);
-    } else if (in_group_by_) {
+    if (in_group_by_) {
       // GROUP BY possibly blind indexed column is ok, but it's necessary to replace it to corresponding BI column
       group_by_mutation_candidates_.push_back(expr);
-      return Visitor::visitExpression(expr);
-    }
-
-    if (expr->table == nullptr) {
-      return Result::makeError(
-          fmt::format("postgres_tde: unable to determine the source of column {}. Please specify an explicit table/alias reference", expr->name));
-    }
-
-    const std::string& table_name = getTableNameByAlias(expr->table);
-    auto column_config = mgr_->getEncryptionConfig()->getColumnConfig(table_name, expr->name);
-
-    if (column_config != nullptr && column_config->hasJoin()) {
-      // Usage may be reasonable if the column is joinable, so delegate check to join mutator
-      return Visitor::visitExpression(expr);
-    }
-
-    // Any other usage must be prohibited
-
-    if (column_config != nullptr && column_config->hasBlindIndex()) {
-      return Result::makeError(
-          fmt::format("postgres_tde: invalid use of encrypted column {}.{}", table_name, expr->name));
     }
 
     return Visitor::visitExpression(expr);

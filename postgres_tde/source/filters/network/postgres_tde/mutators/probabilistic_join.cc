@@ -77,36 +77,6 @@ Result ProbabilisticJoinMutator::mutateDataRow(std::unique_ptr<DataRowMessage>& 
   return Result::ok;
 }
 
-Result ProbabilisticJoinMutator::visitExpression(hsql::Expr* expr) {
-  switch (expr->type) {
-  case hsql::kExprColumnRef: {
-    if (in_select_body_) {
-      // SELECT of possibly joinable column is ok
-      return Visitor::visitExpression(expr);
-    }
-
-    // Any other usage must be prohibited
-
-    if (expr->table == nullptr) {
-      return Result::makeError(fmt::format("postgres_tde: unable to determine the source of column "
-                                           "{}. Please specify an explicit table/alias reference",
-                                           expr->name));
-    }
-
-    const std::string& table_name = getTableNameByAlias(expr->table);
-    auto column_config = mgr_->getEncryptionConfig()->getColumnConfig(table_name, expr->name);
-    if (column_config != nullptr && column_config->hasJoin()) {
-      return Result::makeError(fmt::format("postgres_tde: invalid use of encrypted column {}.{}",
-                                           table_name, expr->name));
-    }
-
-    return Visitor::visitExpression(expr);
-  }
-  default:
-    return Visitor::visitExpression(expr);
-  }
-}
-
 Result ProbabilisticJoinMutator::visitOperatorExpression(hsql::Expr* expr) {
   switch (expr->opType) {
   case hsql::kOpEquals:
